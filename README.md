@@ -99,18 +99,48 @@ Feature importance comparison across all four models to identify shared and dive
 
 ## Key Results
 
-### Aspect 2 — Clinical Perspective
+### Aspect 1 — Patient Perspective (Usefulness)
 
-| Model | Features | Classifier | Macro F1 | Accuracy |
-|-------|----------|------------|----------|----------|
-| Benchmark | 6 linguistic features | Multinomial logistic regression | 0.244 | 32.65% |
-| BERT | 50 PCA components | Random forest | 0.793 | 83.04% |
+| Model | Features | Classifier | Macro F1 | Accuracy | Kappa |
+|-------|----------|------------|----------|----------|-------|
+| Benchmark | 6 linguistic features | Binary logistic regression (GLM) | 0.858 | 75.14% | 0.002 |
+| BERT | 50 PCA components | Random forest | 0.858 | 91.94% | 0.763 |
+
+**Key findings:**
+- Despite identical Macro F1, the two models are fundamentally different — Kappa jumps from 0.002 to 0.763
+- Benchmark collapses to majority class — only 25 useful predictions total, missing ~9,800 actual useful reviews
+- BERT correctly identifies ~6,958 useful reviews with far fewer missed cases (~2,906 vs ~9,800)
+- Rating dominates benchmark feature importance (score 100); all other features negligible
+- BERT importance distributed across multiple PCA components — captures nuanced linguistic signals
+
+---
+
+### Aspect 2 — Clinical Perspective (Condition + Side Effects)
+
+| Model | Features | Classifier | Macro F1 | Accuracy | Kappa |
+|-------|----------|------------|----------|----------|-------|
+| Benchmark | 6 linguistic features | Multinomial logistic regression | 0.244 | 32.65% | 0.091 |
+| BERT | 50 PCA components | Random forest | 0.793 | 83.04% | 0.791 |
 
 **Key findings:**
 - BERT embeddings improve Macro F1 by +225% over simple linguistic features
-- Side effect language appears in 71.6% of all reviews
-- Pain & Inflammation reviews have the highest side effect mention rate (85.9%)
-- Higher rated reviews mention significantly fewer side effects (64.5% at rating 10 vs 80.1% at rating 4)
+- Benchmark collapses to 2 dominant classes (Women's Health, Mental Health) — 10 classes get zero predictions
+- BERT recovers all 14 classes including Cancer (sensitivity 0.64) and Cardiovascular (0.50)
+- Side effect language appears in 71.6% of all reviews, averaging 1.9 mentions per review
+- Pain & Inflammation has the highest side effect mention rate (85.9%); Respiratory the lowest (38.0%)
+- Side effect mentions peak at rating 4, not rating 1 — clinical detail is deliberate, not purely emotional
+
+---
+
+### Cross-Aspect Comparison
+
+| | Usefulness (Aspect 1) | Clinical Signal (Aspect 2) |
+|--|--|--|
+| What drives it? | Rating, tone, experience | Specific vocabulary, semantics |
+| Model difficulty | Easy — proxy-based, surface-level | Hard — context-dependent |
+| BERT improvement | Minimal (same F1, better Kappa) | Massive (+0.549 F1) |
+
+**Key insight:** Usefulness is a socially interpretable signal easily captured by surface features. Clinical information is a semantically embedded signal that requires deep language understanding. These are not just different tasks — they are fundamentally different types of language.
 
 ---
 
