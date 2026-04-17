@@ -38,23 +38,21 @@ drug-review-text-analysis/
 │   └── README.md              ← data access instructions
 ├── feature-extraction/
 │   ├── scripts/
-│   │   ├── phase0_phase2.Rmd  ← data cleaning & feature extraction
-│   │   └── phase2_5_bert.ipynb ← BERT embedding generation
-│   └── outputs/
+│   └── csv-and-npy-files/
 │       └── README.md          ← output file descriptions
 ├── eda/
-│   └── scripts/               ← exploratory data analysis
+│   └── scripts                ← exploratory data analysis
 ├── aspect1-patient/
 │   ├── scripts/
 │   │   ├── aspect1_benchmark.qmd
 │   │   └── aspect1_bert.qmd
 │   └── plots/
 └── aspect2-clinical/
-├── scripts/
-│   ├── aspect2_benchmark.qmd
-│   ├── aspect2_bert.qmd
-│   └── aspect2_side_effects.qmd
-└── plots/
+│   ├── scripts/
+│   │   ├── aspect2_benchmark.qmd
+│   │   ├── aspect2_bert.qmd
+│   │   ├── aspect2_side_effects.qmd
+|   └── plots/
 ```
 
 ---
