@@ -1,0 +1,14 @@
+=== Benchmark Model Summary ===
+
+Macro F1 (test): 0.858 
+Accuracy (test): 0.7514 
+Kappa (test): 0.002 
+
+Feature Importance:
+                        Overall
+sentiment_score        2.727283
+emotional_intensity   19.825881
+review_length          4.313474
+rating_tone_mismatch   4.928518
+tfidf_specificity      0.000000
+rating               100.000000

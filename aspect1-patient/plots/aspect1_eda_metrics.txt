@@ -1,0 +1,46 @@
+=== Aspect 1 EDA Summary ===
+
+Total reviews analysed: 193895 
+Useful reviews: 49311 
+Overall useful rate: 25.4 %
+
+Feature summary by usefulness group:
+# A tibble: 2 × 7
+  useful_label avg_sentiment_score avg_emotional_intensity avg_review_length avg_tfidf_specificity pct_mismatch avg_rating
+  <fct>                      <dbl>                   <dbl>             <dbl>                 <dbl>        <dbl>      <dbl>
+1 Not Useful                -1.04                     4.84              91.2                 0.043         30.8       6.53
+2 Useful                    -0.444                    5.08              90.5                 0.043         39.1       8.33
+
+By condition category:
+# A tibble: 14 × 6
+   condition_category    total_reviews useful_reviews pct_useful avg_review_length avg_sentiment
+   <chr>                         <int>          <int>      <dbl>             <dbl>         <dbl>
+ 1 Men's Health                   2666           1303       48.9              78.6         1.34 
+ 2 Cardiovascular                 5114           2420       47.3              74.6        -1.54 
+ 3 Urological                     1372            627       45.7              79.3        -0.636
+ 4 Mental Health                 46012          19267       41.9              92.5        -1.09 
+ 5 Neurological                   2936           1090       37.1              81.9        -0.566
+ 6 Pain & Inflammation           24061           8745       36.3              81.9        -2.10 
+ 7 Metabolic & Hormonal          15112           5235       34.6              92.4        -0.21 
+ 8 Substance & Addiction          4806           1588       33                97.5         1.46 
+ 9 Cancer                          765            177       23.1              81.8        -1.13 
+10 Gastrointestinal              10211           2096       20.5              89.3        -1.10 
+11 Skin & Eyes                    4530            712       15.7              85.2         0.898
+12 Respiratory                    5735            892       15.6              70.5        -0.229
+13 Infectious Disease            15601           2235       14.3              83.9        -1.76 
+14 Women's Health                54974           2924        5.3             101.         -0.592
+
+By rating:
+# A tibble: 10 × 6
+   rating total_reviews useful_reviews pct_useful avg_sentiment avg_length
+    <dbl>         <int>          <int>      <dbl>         <dbl>      <dbl>
+ 1      1         25661           2533        9.9        -4.57        85.6
+ 2      2          8380            918       11          -3.25        89.4
+ 3      3          7954            882       11.1        -2.68        89.7
+ 4      4          6093            684       11.2        -2.14        91.1
+ 5      5          9938           1254       12.6        -1.91        92.6
+ 6      6          7751           1282       16.5        -1.22        91.6
+ 7      7         11530           2257       19.6        -0.775       94.7
+ 8      8         22891           6392       27.9        -0.28        94.7
+ 9      9         33369          10931       32.8         0.227       94.1
+10     10         60328          22178       36.8         0.703       89.7

@@ -1,0 +1,18 @@
+=== BERT Model Summary ===
+
+Macro F1 (test): 0.858 
+Accuracy (test): 0.9194 
+Kappa (test): 0.7634 
+
+Top 10 PCA components by importance:
+        Overall
+pc_10 100.00000
+pc_14  80.11632
+pc_20  78.47041
+pc_2   60.26340
+pc_8   34.18318
+pc_16  31.57409
+pc_25  25.92263
+pc_4   21.52136
+pc_6   18.06700
+pc_11  17.46168
