@@ -176,6 +176,7 @@ scikit-learn
 4. Run scripts in order:
    - `feature-extraction/scripts/Feature_extraction.Rmd` ← data cleaning & feature extraction
    - `feature-extraction/scripts/BERT_embeddings.ipynb` ← BERT embedding generation
+   - `feature-extraction/scripts/BERT_PCA.Rmd` ← BERT PCA generation
    - Then run aspect scripts:
      - Create a `/data` folder inside `aspect1-patient/` and `aspect2-clinical/`
      - Run `aspect1-patient/scripts/aspect1_benchmark.qmd` and `aspect1_bert.qmd`
