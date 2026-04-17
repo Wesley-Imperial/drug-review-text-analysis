@@ -1,0 +1,738 @@
+---
+title: "Drug Review Dataset — Phase 0 & Phase 2"
+author: "Kaggle University Club Hackathon"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+subtitle: Data Cleaning & Shared Feature Extraction
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center"
+)
+```
+
+------------------------------------------------------------------------
+
+# Overview
+
+This notebook covers two phases of our pipeline:
+
+-   **Phase 0** — Load the raw train/test CSVs, combine them, and clean the data
+-   **Phase 2** — Engineer a shared set of features that feed into both modelling branches (Aspect 1: patient perspective, Aspect 2: clinical perspective)
+
+The output is a single enriched dataset (`drug_reviews_phase2.csv`) ready for Phase 3 modelling.
+
+------------------------------------------------------------------------
+
+# Setup — Install & Load Packages
+
+```{r packages}
+required_packages <- c(
+  "tidyverse",   # data wrangling & piping
+  "tidytext",    # text tokenisation and TF-IDF
+  "sentimentr",  # sentence-level sentiment scoring
+  "textclean",   # HTML entity stripping
+  "lubridate",   # date parsing
+  "quanteda",    # advanced text features
+  "ggplot2",     # visualisation
+  "scales",      # axis formatting in plots
+  "caret"        # createDataPartition for Phase 3
+)
+
+installed <- rownames(installed.packages())
+for (pkg in required_packages) {
+  if (!pkg %in% installed) install.packages(pkg, dependencies = TRUE)
+}
+
+library(tidyverse)
+library(tidytext)
+library(sentimentr)
+library(textclean)
+library(lubridate)
+library(quanteda)
+library(ggplot2)
+library(scales)
+library(caret)
+library(lexicon)
+library(quanteda.textstats)
+```
+
+```{r}
+source("TAB_dfm.R")
+```
+
+------------------------------------------------------------------------
+
+# Phase 0 — Data Loading & Cleaning
+
+## Step 0.1 — Load & Combine Train and Test
+
+We combine train and test into one full dataset **before** feature engineering. This ensures all features are computed consistently across the entire dataset. We will re-split into Train/Test in Phase 3 before modelling.
+
+```{r load-data}
+train_raw <- read.csv("drugsComTrain_raw.csv", stringsAsFactors = FALSE)
+test_raw  <- read.csv("drugsComTest_raw.csv",  stringsAsFactors = FALSE)
+
+# Tag origin so we can re-split later if needed
+train_raw$split <- "train"
+test_raw$split  <- "test"
+
+# Combine
+df <- rbind(train_raw, test_raw)
+
+cat("Combined rows:", nrow(df), "\n")
+cat("Columns:", paste(names(df), collapse = ", "), "\n")
+```
+
+**Quick preview of the raw data:**
+
+```{r preview-raw}
+head(df, 5)
+```
+
+```{r}
+# Exact duplicate review text
+dup_review_drug_rows <- df %>%
+  add_count(drugName, review, name = "dup_n") %>%
+  filter(!is.na(review), dup_n > 1) %>%
+  select(uniqueID, drugName, review, usefulCount, dup_n) %>%
+  arrange(review, desc(usefulCount))
+
+dup_review_drug_rows
+```
+
+## Step 0.2 — Remove Duplicates
+
+```{r remove-duplicates}
+n_before <- nrow(df)
+
+df <- df %>%
+  distinct(uniqueID, .keep_all = TRUE) %>%       # remove exact duplicate IDs
+  distinct(drugName, review, .keep_all = TRUE)    # remove same review on same drug
+
+cat("Rows removed:", n_before - nrow(df), "\n")
+cat("Rows remaining:", nrow(df), "\n")
+```
+
+```{r}
+head(df)
+```
+
+## Step 0.3 — Strip HTML from Reviews
+
+Reviews from Drugs.com contain HTML entities (e.g. `&#039;` → `'`) and occasional HTML tags. We clean these out.
+
+```{r strip-html}
+
+df$review <- df$review %>%
+  gsub('&#039;', "'",  .) %>%
+  gsub('&amp;',  '&',  .) %>%
+  gsub('&quot;', '"',  .) %>%
+  gsub('&lt;',   '<',  .) %>%
+  gsub('&gt;',   '>',  .) %>%
+  gsub('&nbsp;', ' ',  .) %>%
+  gsub('<[^>]+>', ' ', .) %>%
+  str_squish()
+
+# Check a cleaned example
+cat("Example cleaned review:\n")
+cat(df$review[2], "\n")
+```
+
+```{r}
+
+nrow(df)
+df
+
+```
+
+## Step 0.4 — Lowercase
+
+```{r lowercase}
+df$review_clean <- tolower(df$review)
+```
+
+```{r}
+head(df)
+```
+
+## Step 0.5 — Filter Short Reviews (\< 20 words)
+
+Reviews with fewer than 20 words carry too little signal for NLP analysis.
+
+```{r filter-short}
+df$word_count_raw <- str_count(df$review_clean, "\\S+")
+
+n_before <- nrow(df)
+df <- df %>% filter(word_count_raw >= 20)
+
+cat("Rows removed (too short):", n_before - nrow(df), "\n")
+cat("Rows remaining:", nrow(df), "\n")
+```
+
+## Step 0.6 — Handle Missing Conditions
+
+```{r missing-conditions}
+cat("Missing conditions before:", sum(is.na(df$condition) | df$condition == ""), "\n")
+
+df$condition[is.na(df$condition) | df$condition == ""] <- "Unknown"
+
+cat("Missing conditions after:", sum(is.na(df$condition) | df$condition == ""), "\n")
+```
+
+## Step 0.7 — Parse Date Column
+
+```{r parse-date}
+df$date <- dmy(df$date)   # converts "20-May-12" → 2012-05-20
+
+cat("Date range:", format(min(df$date)), "to", format(max(df$date)), "\n")
+```
+
+## Step 0.8 — Validate Rating Range (1–10)
+
+```{r validate-rating}
+n_before <- nrow(df)
+df <- df %>% filter(rating >= 1 & rating <= 10)
+
+cat("Rows removed (invalid rating):", n_before - nrow(df), "\n")
+cat("Rating range:", min(df$rating), "to", max(df$rating), "\n")
+```
+
+## Phase 0 Summary
+
+```{r phase0-summary}
+cat("=== Phase 0 Complete ===\n")
+cat("Final cleaned dataset:", nrow(df), "rows x", ncol(df), "columns\n")
+```
+
+**Rating distribution after cleaning:**
+
+```{r rating-plot, fig.width=7, fig.height=4}
+ggplot(df, aes(x = factor(rating))) +
+  geom_bar(fill = "#2c7bb6", colour = "white") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Rating Distribution",
+    x     = "Star Rating (1–10)",
+    y     = "Number of Reviews"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+# Phase 1 — EDA
+
+## Review Length
+
+```{r}
+df <- df %>%
+  mutate(
+    review_nchar  = nchar(review_clean),
+    review_nwords = str_count(review_clean, "\\S+"),
+    rating_group = case_when(
+      rating <= 4 ~ "Low",
+      rating <= 7 ~ "Medium",
+      rating >= 8 ~ "High"
+    ) %>% factor(levels = c("Low", "Medium", "High"))
+  )
+```
+
+```{r}
+ggplot(df, aes(x = review_nwords)) +
+  geom_histogram(binwidth = 10, fill = "#66c2a5", colour = "white") +
+  coord_cartesian(xlim = c(0, 300)) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Distribution of Review Length",
+    x = "Number of Words",
+    y = "Number of Reviews"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+ggplot(df, aes(x = rating_group, y = review_nwords)) +
+  geom_boxplot(fill = "#8da0cb", outlier.alpha = 0.12) +
+  coord_cartesian(ylim = c(0, 300)) +
+  labs(
+    title = "Review Length by Rating Group",
+    x = "Rating Group",
+    y = "Number of Words"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+## Usefulness Distribution
+
+```{r usefulness-vars}
+usefulness_cutoff <- quantile(df$usefulCount, 0.75, na.rm = TRUE)
+
+df <- df %>%
+  mutate(
+    useful_binary = if_else(usefulCount >= usefulness_cutoff, "Useful", "Less useful"),
+    useful_binary = factor(useful_binary, levels = c("Less useful", "Useful"))
+  )
+
+cat("Top-25% usefulness cutoff:", usefulness_cutoff, "\n")
+```
+
+```{r}
+ggplot(df, aes(x = usefulCount)) +
+  geom_histogram(binwidth = 5, fill = "#fc8d62", colour = "white") +
+  coord_cartesian(xlim = c(0, 100)) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Distribution of usefulCount",
+    x = "Useful Votes",
+    y = "Number of Reviews"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+ggplot(df, aes(x = useful_binary)) +
+  geom_bar(fill = "#e6ab02") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Useful vs Less Useful Reviews",
+    x = NULL,
+    y = "Number of Reviews"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+df <- df %>%
+  mutate(
+    length_group = cut(
+      review_nwords,
+      breaks = c(0, 25, 50, 100, 150, 200, Inf),
+      labels = c("1-25", "26-50", "51-100", "101-150", "151-200", "200+"),
+      include.lowest = TRUE
+    )
+  )
+
+ggplot(df, aes(x = length_group, y = usefulCount)) +
+  geom_boxplot(fill = "skyblue", outlier.alpha = 0.08) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    title = "Useful Votes by Review Length Group",
+    x = "Review Length Group",
+    y = "usefulCount"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+ggplot(df, aes(x = rating_group, y = usefulCount)) +
+  geom_boxplot(fill = "#fdb462", outlier.alpha = 0.12) +
+  coord_cartesian(ylim = c(0, 50)) +
+  labs(
+    title = "Useful Votes by Rating Group",
+    x = "Rating Group",
+    y = "usefulCount"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+## Conditions
+
+```{r top-conditions-table}
+top_conditions <- df %>%
+  count(condition, sort = TRUE) %>%
+  slice_head(n = 15)
+
+top_conditions
+```
+
+```{r}
+ggplot(top_conditions, aes(x = reorder(condition, n), y = n)) +
+  geom_col(fill = "#5e81ac") +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Top 15 Conditions by Number of Reviews",
+    x = NULL,
+    y = "Number of Reviews"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+condition_usefulness <- df %>%
+  filter(condition %in% top_conditions$condition) %>%
+  group_by(condition) %>%
+  summarise(
+    avg_useful = mean(usefulCount, na.rm = TRUE),
+    median_useful = median(usefulCount, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  )
+
+ggplot(condition_usefulness, aes(x = reorder(condition, avg_useful), y = avg_useful)) +
+  geom_col(fill = "#d08770") +
+  coord_flip() +
+  labs(
+    title = "Average Useful Votes by Condition",
+    x = NULL,
+    y = "Average usefulCount"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+## Sentiment by Rating
+
+```{r}
+df <- df %>%
+  mutate(
+    BLsentiment = review_clean %>%
+      get_sentences() %>%
+      sentiment_by() %>%
+      pull(ave_sentiment)
+  )
+```
+
+```{r}
+ggplot(df, aes(x = factor(rating), y = BLsentiment)) +
+  geom_boxplot(fill = "skyblue2", outlier.alpha = 0.12) +
+  labs(
+    title = "Sentiment Score by Rating",
+    x = "Rating",
+    y = "Average Sentiment"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+ggplot(df, aes(x = rating_group, y = BLsentiment)) +
+  geom_boxplot(fill = "mediumpurple1", outlier.alpha = 0.12) +
+  labs(
+    title = "Sentiment Score by Rating Group",
+    x = "Rating Group",
+    y = "Average Sentiment"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+### Sentiment by Usefulness
+
+```{r}
+ggplot(df, aes(x = useful_binary, y = BLsentiment)) +
+  geom_boxplot(fill = "peachpuff3", outlier.alpha = 0.12) +
+  labs(
+    title = "Sentiment Score by Usefulness Group",
+    x = "Usefulness Group",
+    y = "Average Sentiment"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+df <- df %>%
+  mutate(
+    sentiment_bin = cut(
+      BLsentiment,
+      breaks = c(-Inf, -0.5, -0.1, 0.1, 0.5, Inf),
+      labels = c("Very negative", "Negative", "Neutral", "Positive", "Very positive")
+    )
+  )
+
+ggplot(df, aes(x = sentiment_bin, y = usefulCount)) +
+  geom_boxplot(fill = "skyblue", outlier.alpha = 0.08) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    title = "Useful Votes by Sentiment Group",
+    x = "Sentiment Group",
+    y = "usefulCount"
+  ) +
+  theme_minimal(base_size = 13)
+
+```
+
+Correlation Check
+
+```{r}
+cor(df$BLsentiment, df$rating, use = "complete.obs")
+cor(df$BLsentiment, df$usefulCount, use = "complete.obs")
+```
+
+## Wordcloud
+
+```{r}
+library(quanteda.textplots)
+
+dfm_high <- TAB_dfm(
+  df %>%
+    filter(rating_group == "High") %>%
+    pull(review_clean),
+  ngrams = 1:2,
+  stop.words = TRUE,
+  min.prop = 0.01
+)
+
+dfm_low <- TAB_dfm(
+  df %>%
+    filter(rating_group == "Low") %>%
+    pull(review_clean),
+  ngrams = 1:2,
+  stop.words = TRUE,
+  min.prop = 0.01
+)
+
+par(mfrow = c(1, 2))
+
+textplot_wordcloud(dfm_high, max_words = 75)
+title("High-rated Reviews")
+
+textplot_wordcloud(dfm_low, max_words = 75)
+title("Low-rated Reviews")
+
+par(mfrow = c(1, 1))
+```
+
+## Rating–Tone Mismatch
+
+```{r}
+df <- df %>%
+  mutate(
+    tone_match = case_when(
+      rating >= 8 & BLsentiment < 0  ~ "High rating, negative tone",
+      rating <= 4 & BLsentiment > 0  ~ "Low rating, positive tone",
+      TRUE ~ "Aligned / mixed"
+    ),
+    tone_match = factor(
+      tone_match,
+      levels = c("Aligned / mixed",
+                 "High rating, negative tone",
+                 "Low rating, positive tone")
+    )
+  )
+
+table(df$tone_match)
+```
+
+```{r}
+ggplot(df, aes(x = tone_match)) +
+  geom_bar(fill = "#c97b63") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Frequency of Rating–Tone Mismatch",
+    x = NULL,
+    y = "Number of Reviews"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+```{r}
+ggplot(df, aes(x = tone_match, y = usefulCount)) +
+  geom_boxplot(fill = "#8ecae6", outlier.alpha = 0.08) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    title = "Useful Votes by Rating–Tone Mismatch Group",
+    x = NULL,
+    y = "usefulCount"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+```{r}
+mismatch_summary <- df %>%
+  group_by(tone_match) %>%
+  summarise(
+    n = n(),
+    avg_useful = mean(usefulCount, na.rm = TRUE),
+    median_useful = median(usefulCount, na.rm = TRUE),
+    avg_words = mean(review_nwords, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+mismatch_summary
+```
+
+## Useful vs Less Useful Top Words
+
+```{r}
+dfm_useful_words <- TAB_dfm(
+  df %>%
+    filter(useful_binary == "Useful") %>%
+    pull(review_clean),
+  ngrams = 1,
+  stop.words = TRUE,
+  min.prop = 0.01
+)
+
+dfm_less_words <- TAB_dfm(
+  df %>%
+    filter(useful_binary == "Less useful") %>%
+    pull(review_clean),
+  ngrams = 1,
+  stop.words = TRUE,
+  min.prop = 0.01
+)
+```
+
+```{r}
+top_useful_words <- textstat_frequency(dfm_useful_words, n = 15) %>%
+  mutate(group = "Useful")
+
+top_less_words <- textstat_frequency(dfm_less_words, n = 15) %>%
+  mutate(group = "Less useful")
+
+top_words_usefulness <- bind_rows(top_useful_words, top_less_words)
+top_words_usefulness
+```
+
+```{r}
+ggplot(top_words_usefulness,
+       aes(x = frequency, y = reorder(feature, frequency), fill = group)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~group, scales = "free") +
+  labs(
+    title = "Top Words in Useful vs Less Useful Reviews",
+    x = "Frequency",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+## Useful vs Less useful top bigrams
+
+```{r}
+dfm_useful_bigrams <- TAB_dfm(
+  df %>%
+    filter(useful_binary == "Useful") %>%
+    pull(review_clean),
+  ngrams = 2,
+  stop.words = TRUE,
+  min.prop = 0.005
+)
+
+dfm_less_bigrams <- TAB_dfm(
+  df %>%
+    filter(useful_binary == "Less useful") %>%
+    pull(review_clean),
+  ngrams = 2,
+  stop.words = TRUE,
+  min.prop = 0.005
+)
+
+top_useful_bigrams <- textstat_frequency(dfm_useful_bigrams, n = 15) %>%
+  mutate(group = "Useful")
+
+top_less_bigrams <- textstat_frequency(dfm_less_bigrams, n = 15) %>%
+  mutate(group = "Less useful")
+
+top_bigrams_usefulness <- bind_rows(top_useful_bigrams, top_less_bigrams)
+top_bigrams_usefulness
+```
+
+```{r}
+ggplot(top_bigrams_usefulness,
+       aes(x = frequency, y = reorder(feature, frequency), fill = group)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~group, scales = "free") +
+  labs(
+    title = "Top Bigrams in Useful vs Less Useful Reviews",
+    x = "Frequency",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+## Sickness mention flag
+
+```{r}
+sickness_terms <- c(
+  "nausea", "headache", "dizziness", "vomiting", "insomnia",
+  "cramps", "bleeding", "anxiety", "depression", "pain",
+  "weight gain", "weight loss", "fatigue", "rash", "sleep"
+)
+
+sickness_pattern <- str_c(sickness_terms, collapse = "|")
+
+df <- df %>%
+  mutate(
+    mentions_sickness = str_detect(review_clean, regex(sickness_pattern, ignore_case = TRUE)),
+    mentions_sickness = if_else(mentions_sickness, "Mentions sickness", "No sickness mentioned")
+  )
+```
+
+```{r}
+ggplot(df, aes(x = mentions_sickness)) +
+  geom_bar(fill = "#90be6d") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Reviews Mentioning Sickness",
+    x = NULL,
+    y = "Number of Reviews"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+ggplot(df, aes(x = mentions_sickness, y = usefulCount)) +
+  geom_boxplot(fill = "#f4a261", outlier.alpha = 0.08) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(
+    title = "Useful Votes by Sickness Mention",
+    x = NULL,
+    y = "usefulCount"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+ggplot(df, aes(x = mentions_sickness, y = rating)) +
+  geom_boxplot(fill = "#a8dadc", outlier.alpha = 0.08) +
+  labs(
+    title = "Ratings by Sickness Mentioned",
+    x = NULL,
+    y = "Rating"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+sickness_summary <- df %>%
+  group_by(mentions_sickness) %>%
+  summarise(
+    n = n(),
+    avg_useful = mean(usefulCount, na.rm = TRUE),
+    median_useful = median(usefulCount, na.rm = TRUE),
+    avg_rating = mean(rating, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+sickness_summary
+```
+
+### Mismatched Reviews
+
+```{r}
+high_neg_examples <- df %>%
+  filter(tone_match == "High rating, negative tone") %>%
+  select(drugName, condition, rating, usefulCount, BLsentiment, review_clean) %>%
+  slice_head(n = 5)
+
+low_pos_examples <- df %>%
+  filter(tone_match == "Low rating, positive tone") %>%
+  select(drugName, condition, rating, usefulCount, BLsentiment, review_clean) %>%
+  slice_head(n = 5)
+
+high_neg_examples
+```
