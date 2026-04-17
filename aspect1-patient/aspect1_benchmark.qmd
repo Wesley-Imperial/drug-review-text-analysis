@@ -1,0 +1,297 @@
+---
+title: "Aspect 1 Benchmark Model"
+author: "Evonne"
+date: today
+format: html
+---
+
+## Overview
+This script builds the benchmark model for Aspect 1 of the group project. The goal is to predict whether a drug review is in the top 25% of usefulness votes (useful_binary = 1) using linguistic features extracted in Phase 2, without any deep learning embeddings. This serves as the baseline model that the BERT-based model (aspect1_bert.qmd) will be compared against in terms of macro F1 score.
+The model uses binary logistic regression with 5-fold cross-validation, trained on 80% of the data and evaluated on a held-out 20% test set. The train/test split is shared across all team members to ensure consistent and comparable results.
+
+### Research Questions
+This script addresses two of the project's sub-research questions:
+Sub-RQ1: What linguistic features distinguish useful drug reviews from non-useful ones?
+Sub-RQ3: Can a review's usefulness be predicted from its linguistic features alone?
+The benchmark model directly tackles Sub-RQ3. The results feed into Ellen's Phase 5 cross-aspect comparison, where feature importance across Aspect 1 and Aspect 2 will be analysed to identify what linguistic signals are shared between predicting usefulness and predicting clinical condition.
+
+
+## Model Design: Aspect 1 vs Aspect 2
+
+This project investigates patient drug reviews from two complementary perspectives, each targeting a different research question but using the same set of linguistic features extracted in Phase 2.
+Aspect 1 (Evonne) asks: what makes a review useful? The target variable is useful_binary — whether a review received enough helpfulness votes to be in the top 25%. This is a patient-facing perspective, focused on the social value of a review.
+Aspect 2 (Wesley) asks: can we predict the medical condition from review text alone? The target variable is condition_category — a 14-class clinical grouping of the condition being treated. This is a clinical perspective, focused on the informational content of a review.
+Both aspects use the same six features as model input:
+
+sentiment_score
+emotional_intensity
+review_length
+rating_tone_mismatch
+tfidf_specificity
+rating
+
+The key exclusions are intentional — Evonne excludes condition_category to avoid using the clinical label as a predictor of usefulness, and Wesley excludes useful_binary to avoid using social signal as a predictor of clinical content. This clean separation ensures that when Ellen compares both aspects in Phase 5, any shared feature importance reflects genuine linguistic overlap rather than an artefact of feature leakage.
+
+
+## Code chunk Order:
+
+1. Setup & libraries
+2. Load data
+3. Add row_id + inspect
+4. Train/test split
+5. Define Features & trainControl
+6. Train the Model
+7. Evaluation
+8. Feature Importance
+9. Save Outputs
+
+
+## 1. Setup & libraries
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(MLmetrics)
+
+set.seed(42)
+```
+
+## 2. Load data
+
+```{r}
+df <- read_csv("data/drug_reviews_phase2.csv") %>%
+  mutate(row_id = row_number())
+
+# Load shared train indices
+train_rows <- read_csv("data/shared_train_idx.csv")$row_id
+
+# Quick check
+cat("Total rows:", nrow(df), "\n")
+cat("Train rows:", length(train_rows), "\n")
+cat("Test rows:", nrow(df) - length(train_rows), "\n")
+```
+
+## 3. Add row_id + inspect
+
+```{r}
+# Check structure
+glimpse(df)
+
+# Check useful_binary distribution
+df %>%
+  count(useful_binary, sort = TRUE) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  print()
+
+# Check for missing values in key columns
+df %>%
+  select(useful_binary, sentiment_score, emotional_intensity,
+         review_length, rating_tone_mismatch, tfidf_specificity, rating) %>%
+  summarise(across(everything(), ~sum(is.na(.)))) %>%
+  glimpse()
+```
+
+```{r}
+# Convert useful_binary to factor
+df <- df %>%
+  mutate(useful_binary = as.factor(useful_binary))
+
+# Verify
+cat("Rows:", nrow(df), "\n")
+cat("Classes:", n_distinct(df$useful_binary), "\n")
+```
+
+## 4. Train/test Split
+
+```{r}
+# Split using Pete's shared train indices
+df_train <- df %>% filter(row_id %in% train_rows)
+df_test  <- df %>% filter(!row_id %in% train_rows)
+
+# Clean factor levels to valid R variable names
+levels(df_train$useful_binary) <- make.names(levels(df_train$useful_binary))
+levels(df_test$useful_binary)  <- make.names(levels(df_test$useful_binary))
+
+# Update y_train and y_test
+y_train <- df_train$useful_binary
+y_test  <- df_test$useful_binary
+
+# Verify
+cat("Train rows:", nrow(df_train), "\n")
+cat("Test rows:", nrow(df_test), "\n")
+cat("Cleaned class levels:\n")
+print(levels(y_train))
+```
+
+
+## 5. Define Features & trainControl
+
+```{r}
+# Define feature columns for benchmark model
+# Note: condition_category deliberately excluded — see Model Design section above
+features <- c("sentiment_score", "emotional_intensity",
+              "review_length", "rating_tone_mismatch",
+              "tfidf_specificity", "rating")
+
+# Prepare train and test sets
+X_train <- df_train %>% select(all_of(features))
+y_train <- df_train$useful_binary
+
+X_test  <- df_test %>% select(all_of(features))
+y_test  <- df_test$useful_binary
+
+# Define cross-validation
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = multiClassSummary,
+  savePredictions = "final",
+  allowParallel = FALSE
+)
+```
+
+
+## 6. Train the Model
+
+```{r}
+#| eval: false
+
+# Train binary logistic regression
+model_benchmark <- train(
+  x = X_train,
+  y = y_train,
+  method = "glm",
+  family = "binomial",
+  trControl = ctrl,
+  metric = "Accuracy",
+  preProcess = c("center", "scale")
+)
+
+# Quick summary
+print(model_benchmark)
+```
+
+```{r}
+# Save immediately after training finishes
+saveRDS(model_benchmark, "data/model_benchmark_aspect1.rds")
+```
+
+
+## 7. Evaluation
+
+```{r}
+# Load model if needed
+# model_benchmark <- readRDS("data/model_benchmark_aspect1.rds")
+
+# Predict on test set
+y_pred <- predict(model_benchmark, newdata = X_test)
+
+# Confusion matrix
+cm <- confusionMatrix(y_pred, y_test)
+print(cm)
+
+# Compute macro F1 manually
+macro_f1 <- cm$byClass["F1"]
+
+cat("\n--- Benchmark Model Results ---\n")
+cat("Macro F1 (test):", round(macro_f1, 4), "\n")
+cat("Accuracy (test):", round(cm$overall["Accuracy"], 4), "\n")
+```
+
+## 8. Feature Importance
+
+```{r}
+# Extract feature importance
+importance <- varImp(model_benchmark, scale = TRUE)
+print(importance)
+
+# Plot feature importance
+plot(importance,
+     main = "Feature Importance — Benchmark Model",
+     top = 6)
+```
+
+
+## 9. Save Outputs
+
+```{r}
+# Create plots folder if it doesn't exist
+dir.create("plots", showWarnings = FALSE)
+
+# Save feature importance plot
+png("plots/aspect1_benchmark_importance.png", width = 800, height = 600)
+plot(importance,
+     main = "Feature Importance — Benchmark Model",
+     top = 6)
+dev.off()
+
+# Save confusion matrix plot
+png("plots/aspect1_benchmark_confusion.png", width = 800, height = 600)
+ggplot(as.data.frame(cm$table),
+       aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), size = 5) +
+  scale_fill_gradient(low = "white", high = "#4B9CD3") +
+  theme_minimal() +
+  labs(title = "Confusion Matrix — Benchmark Model",
+       x = "Actual",
+       y = "Predicted")
+dev.off()
+
+# Save key metrics to a summary file
+sink("plots/aspect1_benchmark_metrics.txt")
+cat("=== Benchmark Model Summary ===\n\n")
+cat("Macro F1 (test):", round(macro_f1, 4), "\n")
+cat("Accuracy (test):", round(cm$overall["Accuracy"], 4), "\n")
+cat("Kappa (test):", round(cm$overall["Kappa"], 4), "\n\n")
+cat("Feature Importance:\n")
+print(importance$importance)
+sink()
+
+cat("All outputs saved to /plots folder\n")
+```
+
+## Summary & Handoff Notes (for Ellen)
+
+### What this file does
+This script builds the benchmark model for Aspect 1 of the project. The goal is to predict whether a review is useful (top 25% of helpfulness votes) using only the linguistic and numerical features extracted in Phase 2, without any deep learning embeddings. This serves as the baseline that the BERT model (aspect1_bert.qmd) will be compared against.
+
+### Data
+
+Input: drug_reviews_phase2.csv — 198,308 rows
+Split: 80/20 train/test using shared_train_idx.csv, shared across all team members for consistency
+Target variable: useful_binary — 1 if review is in top 25% of usefulness votes, 0 otherwise
+Features used: sentiment_score, emotional_intensity, review_length, rating_tone_mismatch, tfidf_specificity, rating
+
+### Model
+
+Classifier: Binary logistic regression via caret (method = "glm", family = "binomial")
+Validation: 5-fold cross-validation
+Optimisation metric: Accuracy during training, Macro F1 computed manually post-training
+
+### Results
+
+Macro F1 (test): 0.858
+Accuracy (test): 75.14%
+Kappa (test): 0.002
+
+### Key Findings
+
+rating completely dominates feature importance — scoring 100 while all other features scored below 20. emotional_intensity is a distant second at 19.8, followed by rating_tone_mismatch (4.9), review_length (4.3), sentiment_score (2.7), and tfidf_specificity scoring exactly 0. Despite the seemingly high Macro F1 of 0.858, the Kappa of 0.002 reveals the model has essentially no real predictive power. The confusion matrix confirms that the model predicted useful (X1) only 25 times out of the entire test set (9 correct, 16 incorrect), while predicting not-useful (X0) for virtually every review. It correctly classified 29,783 non-useful reviews but missed 9,848 useful ones entirely. The inflated Macro F1 is a direct consequence of class imbalance. The non-useful class (X0) makes up ~75% of the data and achieves very high F1 on its own, pulling the macro average upward even though the useful class (X1) is almost completely ignored. Kappa is the more honest metric  where 0.002 is essentially zero. This collapse toward the majority class is expected as simple aggregate features cannot capture the nuanced linguistic signals that distinguish useful reviews from non-useful ones, which motivates the BERT model.
+
+### Output Files
+All files are saved in the /plots folder:
+
+aspect1_benchmark_metrics.txt — Macro F1, Accuracy, Kappa, and full feature importance scores
+aspect1_benchmark_confusion.png — 2x2 confusion matrix heatmap
+aspect1_benchmark_importance.png — Feature importance bar chart
+
+The key number for cross-aspect comparison is Macro F1. Feature importance rankings should be compared against Wesley's Aspect 2 benchmark to identify which linguistic features are shared predictors across both aspects.
+
+### Limitations
+
+Severe class imbalance (useful_binary = 1 represents only ~25% of reviews) causes the model to collapse toward predicting not-useful for almost every review. Binary logistic regression assumes a linear decision boundary, which may not capture complex interactions between features. rating dominating importance suggests the model is largely using star rating as a proxy, rather than genuinely learning linguistic signals of usefulness. Macro F1 is misleading here due to class imbalance — Kappa (0.002) is the more appropriate metric and should be the primary comparison number for Phase 5.

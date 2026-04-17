@@ -1,0 +1,290 @@
+---
+title: "Aspect 1 EDA — Linguistic Features of Useful Reviews"
+author: "Evonne"
+date: today
+format: html
+---
+
+## Overview
+
+This script addresses Sub-RQ1 of the project — identifying what linguistic features distinguish useful drug reviews from non-useful ones. Unlike the benchmark and BERT models which focus on predicting usefulness, this analysis takes a descriptive approach to understand how features like sentiment, emotional intensity, review length, and rating-tone mismatch vary between useful and non-useful reviews, and how this varies across condition categories and rating levels.
+The approach is intentionally exploratory — rather than building a classifier, we compare feature distributions between the two usefulness groups and identify which linguistic signals most clearly separate them. This provides interpretable, human-readable insight that directly answers Sub-RQ1.
+
+### Research Questions
+
+Sub-RQ1: What linguistic features distinguish useful drug reviews from non-useful ones?
+This script answers Sub-RQ1 by showing how linguistic features differ between useful (top 25% of helpfulness votes) and non-useful reviews. The key questions are:
+
+Which linguistic features most strongly separate useful from non-useful reviews?
+Do useful reviews vary in their linguistic patterns across condition categories?
+Is there a relationship between rating level and the linguistic profile of useful reviews?
+
+The findings feed directly into Ellen's Phase 5 interpretation — specifically the patient-facing implications section around surfacing better reviews automatically on Drugs.com.
+
+
+## 1. Setup & libraries
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(ggplot2)
+
+set.seed(42)
+```
+
+
+## 2. Load data
+
+```{r}
+# Load main dataset
+df <- read_csv("data/drug_reviews_phase2.csv") %>%
+  mutate(row_id = row_number())
+
+# Filter Other and Unknown — consistent with benchmark and BERT models
+df <- df %>%
+  filter(!condition_category %in% c("Other", "Unknown"))
+
+# Convert useful_binary to labelled factor for plotting
+df <- df %>%
+  mutate(useful_label = ifelse(useful_binary == 1, "Useful", "Not Useful"),
+         useful_label = factor(useful_label, levels = c("Not Useful", "Useful")))
+
+# Verify
+cat("Total rows:", nrow(df), "\n")
+cat("Condition categories:", n_distinct(df$condition_category), "\n")
+cat("Useful reviews:", sum(df$useful_binary == 1), "\n")
+cat("Not useful reviews:", sum(df$useful_binary == 0), "\n")
+cat("Overall useful rate:", round(mean(df$useful_binary) * 100, 1), "%\n")
+```
+
+
+## 3. Feature distributions: Useful vs Not Useful
+
+```{r}
+# Summary statistics of each feature by usefulness group
+feature_summary <- df %>%
+  group_by(useful_label) %>%
+  summarise(
+    avg_sentiment_score     = round(mean(sentiment_score, na.rm = TRUE), 3),
+    avg_emotional_intensity = round(mean(emotional_intensity, na.rm = TRUE), 3),
+    avg_review_length       = round(mean(review_length, na.rm = TRUE), 1),
+    avg_tfidf_specificity   = round(mean(tfidf_specificity, na.rm = TRUE), 3),
+    pct_mismatch            = round(mean(rating_tone_mismatch, na.rm = TRUE) * 100, 1),
+    avg_rating              = round(mean(rating, na.rm = TRUE), 2)
+  )
+
+print(feature_summary)
+```
+
+```{r}
+# Plot 1 — Feature comparison across usefulness groups (faceted box plots)
+df_long <- df %>%
+  select(useful_label, sentiment_score, emotional_intensity,
+         review_length, tfidf_specificity, rating) %>%
+  pivot_longer(
+    cols = -useful_label,
+    names_to = "feature",
+    values_to = "value"
+  ) %>%
+  mutate(feature = recode(feature,
+    "sentiment_score"     = "Sentiment Score",
+    "emotional_intensity" = "Emotional Intensity",
+    "review_length"       = "Review Length",
+    "tfidf_specificity"   = "TF-IDF Specificity",
+    "rating"              = "Rating"
+  ))
+
+plot_features <- ggplot(df_long, aes(x = useful_label, y = value, fill = useful_label)) +
+  geom_boxplot(outlier.alpha = 0.1, width = 0.5) +
+  facet_wrap(~ feature, scales = "free_y", ncol = 3) +
+  scale_fill_manual(values = c("Not Useful" = "#99BBDD", "Useful" = "#4B9CD3")) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 9)) +
+  labs(title = "Linguistic Feature Distributions: Useful vs Not Useful Reviews",
+       x = NULL,
+       y = "Feature Value")
+
+print(plot_features)
+```
+
+```{r}
+# Plot 2 — Rating-tone mismatch rate by usefulness group
+mismatch_summary <- df %>%
+  group_by(useful_label) %>%
+  summarise(pct_mismatch = round(mean(rating_tone_mismatch) * 100, 1))
+
+plot_mismatch <- ggplot(mismatch_summary,
+                        aes(x = useful_label, y = pct_mismatch, fill = useful_label)) +
+  geom_col(width = 0.5) +
+  geom_text(aes(label = paste0(pct_mismatch, "%")), vjust = -0.5, size = 5) +
+  scale_fill_manual(values = c("Not Useful" = "#99BBDD", "Useful" = "#4B9CD3")) +
+  scale_y_continuous(limits = c(0, max(mismatch_summary$pct_mismatch) * 1.2)) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  labs(title = "Rating-Tone Mismatch Rate by Usefulness Group",
+       x = NULL,
+       y = "% Reviews with Rating-Tone Mismatch")
+
+print(plot_mismatch)
+```
+
+
+## 4. Usefulness rate by condition category
+
+```{r}
+# Usefulness rate by condition category
+condition_useful <- df %>%
+  group_by(condition_category) %>%
+  summarise(
+    total_reviews  = n(),
+    useful_reviews = sum(useful_binary == 1),
+    pct_useful     = round(mean(useful_binary) * 100, 1),
+    avg_review_length = round(mean(review_length), 1),
+    avg_sentiment  = round(mean(sentiment_score), 3)
+  ) %>%
+  arrange(desc(pct_useful))
+
+print(condition_useful)
+
+# Visualise
+plot_condition <- ggplot(condition_useful,
+                         aes(x = reorder(condition_category, pct_useful),
+                             y = pct_useful,
+                             fill = pct_useful)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_gradient(low = "#99BBDD", high = "#4B9CD3") +
+  theme_minimal() +
+  labs(title = "Usefulness Rate by Condition Category",
+       x = "Condition Category",
+       y = "% Reviews Rated as Useful (Top 25%)",
+       fill = "Rate %")
+
+print(plot_condition)
+```
+
+
+## 5. Usefulness rate by rating level
+
+```{r}
+# Usefulness rate by star rating
+rating_useful <- df %>%
+  group_by(rating) %>%
+  summarise(
+    total_reviews  = n(),
+    useful_reviews = sum(useful_binary == 1),
+    pct_useful     = round(mean(useful_binary) * 100, 1),
+    avg_sentiment  = round(mean(sentiment_score), 3),
+    avg_length     = round(mean(review_length), 1)
+  ) %>%
+  arrange(rating)
+
+print(rating_useful)
+
+# Visualise
+plot_rating <- ggplot(rating_useful,
+                      aes(x = rating, y = pct_useful, fill = pct_useful)) +
+  geom_col() +
+  scale_x_continuous(breaks = 1:10) +
+  scale_fill_gradient(low = "#99BBDD", high = "#4B9CD3") +
+  theme_minimal() +
+  labs(title = "Usefulness Rate by Patient Rating Level",
+       x = "Patient Rating (1-10)",
+       y = "% Reviews Rated as Useful (Top 25%)",
+       fill = "Rate %")
+
+print(plot_rating)
+```
+
+
+## 6. Save outputs
+
+```{r}
+dir.create("plots", showWarnings = FALSE)
+
+# Save feature distribution plot
+ggsave("plots/aspect1_eda_features.png", plot = plot_features, width = 12, height = 8)
+
+# Save mismatch plot
+ggsave("plots/aspect1_eda_mismatch.png", plot = plot_mismatch, width = 6, height = 5)
+
+# Save condition plot
+ggsave("plots/aspect1_eda_by_condition.png", plot = plot_condition, width = 10, height = 8)
+
+# Save rating plot
+ggsave("plots/aspect1_eda_by_rating.png", plot = plot_rating, width = 10, height = 6)
+
+# Save summary stats
+sink("plots/aspect1_eda_metrics.txt")
+cat("=== Aspect 1 EDA Summary ===\n\n")
+cat("Total reviews analysed:", nrow(df), "\n")
+cat("Useful reviews:", sum(df$useful_binary == 1), "\n")
+cat("Overall useful rate:", round(mean(df$useful_binary) * 100, 1), "%\n\n")
+cat("Feature summary by usefulness group:\n")
+print(feature_summary)
+cat("\nBy condition category:\n")
+print(condition_useful)
+cat("\nBy rating:\n")
+print(rating_useful)
+sink()
+
+cat("All outputs saved to /plots folder\n")
+```
+
+
+## Summary & Handoff Notes (for Ellen)
+
+### What this file does
+This script addresses Sub-RQ1 of the project — identifying what linguistic features distinguish useful drug reviews from non-useful ones. Using the Phase 2 features already computed, it compares feature distributions between the top 25% most useful reviews and the remaining 75%, and analyses how usefulness rates vary across condition categories and rating levels.
+
+### Data
+
+Input: drug_reviews_phase2.csv — 193,895 rows after dropping Other and Unknown categories
+No train/test split — full dataset used for descriptive analysis
+No embeddings needed — Phase 2 features only
+
+### Method
+
+Phase 2 features (sentiment_score, emotional_intensity, review_length, tfidf_specificity, rating_tone_mismatch, rating) were compared between useful (useful_binary = 1) and non-useful (useful_binary = 0) groups using box plots and summary statistics. Usefulness rates were then broken down by condition category and rating level to identify patterns.
+
+### Key Findings
+
+#### Overall:
+
+Useful reviews differ systematically from non‑useful ones. They show higher sentiment, slightly higher emotional intensity, and substantially higher ratings (8.33 vs 6.53) according to the summary (“avg_rating … 6.53” vs “8.33”). Useful reviews also exhibit a higher mismatch rate (39.1% vs 30.8%), suggesting that emotionally complex or contradictory reviews may be perceived as more informative.
+
+#### Linguistic Feature Distribution:
+
+Across sentiment, emotional intensity, TF‑IDF specificity, and review length, the distributions for useful vs not‑useful reviews overlap heavily, indicating that most linguistic features do not sharply separate the two groups. The one clear exception is rating, where useful reviews cluster much higher (median ≈9) than not‑useful reviews (median ≈8), consistent with the summary (“avg_rating … 6.53” vs “8.33”). Emotional intensity is also slightly higher for useful reviews, but the effect is modest. Overall, this plot reinforces that rating is the strongest single differentiator, with other features contributing more subtle signals.
+
+#### Rating-Tone Mismatch Rate: 
+
+Useful reviews show a substantially higher mismatch rate (39.1% vs 30.8%), matching the summary (“pct_mismatch … 30.8 … 39.1”). This suggests that reviews where the emotional tone and numeric rating diverge — for example, a high rating but a nuanced or critical narrative — are more likely to be judged useful. Readers may perceive these mismatched reviews as more detailed, honest, or context‑rich, making mismatch a surprisingly strong marker of usefulness.
+
+#### Usefulness rate by condition category:
+
+Men's Health, Cardiovascular, and Urological conditions produce the highest proportion of useful reviews (≈49%, 47%, and 45% respectively), while Women's Health is a clear outlier at the bottom at approximately 6% — nearly a 10x gap across categories. This suggests that conditions with more comparable, outcome-driven treatment experiences generate peer-useful reviews more consistently, whereas conditions with highly variable or personal experiences like Women's Health produce reviews that are harder for other patients to generalise from.
+
+#### Usefulness rate by rating level:
+
+Usefulness rises monotonically with star rating — from approximately 10% at rating 1 up to 37% at rating 10, with no dip or peak in the middle. Ratings 1–4 are consistently low at 10–12%, meaning very negative reviews rarely receive helpfulness votes regardless of their content. The sharpest jump occurs at rating 8 and above. This confirms that rating is the strongest single predictor of usefulness identified in the feature distribution plot. However, the relationship is correlational rather than causal — patients likely vote on reviews that are simultaneously positive and detailed, meaning rating acts as a proxy for overall review quality rather than a direct driver of usefulness.
+
+### Output Files
+All files saved in the /plots folder:
+
+aspect1_eda_metrics.txt — full summary tables by condition and rating
+aspect1_eda_features.png — box plots of all features split by useful vs not useful
+aspect1_eda_mismatch.png — rating-tone mismatch rate by usefulness group
+aspect1_eda_by_condition.png — usefulness rate bar chart by condition category
+aspect1_eda_by_rating.png — usefulness rate bar chart by rating level
+
+### Connection to Other Aspects
+The finding that review length and emotional intensity differ between useful and non-useful reviews connects directly to Wesley's Aspect 2 finding that side effect language is pervasive in reviews. Ellen should examine whether reviews that mention more side effects (flagged in aspect2_side_effects.qmd) are also rated as more useful — this would suggest clinical detail increases perceived usefulness, bridging both aspects.
+
+### Limitations
+
+Usefulness is defined as top 25% of helpfulness votes — reviews with zero votes are all classified as not-useful, which may introduce noise
+Keyword-free approach means we cannot identify which specific words drive usefulness beyond aggregate feature scores
+Descriptive analysis cannot establish causation — longer reviews may be more useful because they are more informative, or because users are more likely to vote on reviews they read fully
