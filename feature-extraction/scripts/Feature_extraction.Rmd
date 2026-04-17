@@ -1,0 +1,639 @@
+---
+title: "Drug Review Dataset — Phase 0 & Phase 2"
+author: "TAB Group Project"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+subtitle: Data Cleaning & Shared Feature Extraction
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center"
+)
+```
+
+---
+
+# Overview
+
+This notebook covers two phases of our pipeline:
+
+- **Phase 0** — Load the raw train/test CSVs, combine them, and clean the data
+- **Phase 2** — Engineer a shared set of features that feed into both modelling branches (Aspect 1: patient perspective, Aspect 2: clinical perspective)
+
+The output is a single enriched dataset (`drug_reviews_phase2.csv`) ready for Phase 3 modelling.
+
+---
+
+# Setup — Install & Load Packages
+
+```{r packages}
+required_packages <- c(
+  "tidyverse",   # data wrangling & piping
+  "tidytext",    # text tokenisation and TF-IDF
+  "sentimentr",  # sentence-level sentiment scoring
+  "textclean",   # HTML entity stripping
+  "lubridate",   # date parsing
+  "quanteda",    # advanced text features
+  "ggplot2",     # visualisation
+  "scales",      # axis formatting in plots
+  "caret"        # createDataPartition for Phase 3
+)
+
+installed <- rownames(installed.packages())
+for (pkg in required_packages) {
+  if (!pkg %in% installed) install.packages(pkg, dependencies = TRUE)
+}
+
+library(tidyverse)
+library(tidytext)
+library(sentimentr)
+library(textclean)
+library(lubridate)
+library(quanteda)
+library(ggplot2)
+library(scales)
+library(caret)
+library(lexicon)
+```
+
+---
+
+# Phase 0 — Data Loading & Cleaning
+
+## Step 0.1 — Load & Combine Train and Test
+
+We combine train and test into one full dataset **before** feature engineering. This ensures all features are computed consistently across the entire dataset. We will re-split into Train/Test in Phase 3 before modelling.
+
+```{r load-data}
+train_raw <- read.csv("drugsComTrain_raw.csv", stringsAsFactors = FALSE)
+test_raw  <- read.csv("drugsComTest_raw.csv",  stringsAsFactors = FALSE)
+
+# Tag origin so we can re-split later if needed
+train_raw$split <- "train"
+test_raw$split  <- "test"
+
+# Combine
+df <- rbind(train_raw, test_raw)
+
+cat("Combined rows:", nrow(df), "\n")
+cat("Columns:", paste(names(df), collapse = ", "), "\n")
+```
+
+**Quick preview of the raw data:**
+
+```{r preview-raw}
+head(df, 5)
+```
+
+
+
+## Step 0.2 — Remove Duplicates
+
+```{r remove-duplicates}
+n_before <- nrow(df)
+
+df <- df %>%
+  distinct(uniqueID, .keep_all = TRUE) %>%       # remove exact duplicate IDs
+  distinct(drugName, review, .keep_all = TRUE)    # remove same review on same drug
+
+cat("Rows removed:", n_before - nrow(df), "\n")
+cat("Rows remaining:", nrow(df), "\n")
+```
+
+```{r}
+head(df)
+```
+
+
+
+## Step 0.3 — Strip HTML from Reviews
+
+Reviews from Drugs.com contain HTML entities (e.g. `&#039;` → `'`) and occasional HTML tags. We clean these out.
+
+```{r strip-html}
+
+df$review <- df$review %>%
+  gsub('&#039;', "'",  .) %>%
+  gsub('&amp;',  '&',  .) %>%
+  gsub('&quot;', '"',  .) %>%
+  gsub('&lt;',   '<',  .) %>%
+  gsub('&gt;',   '>',  .) %>%
+  gsub('&nbsp;', ' ',  .) %>%
+  gsub('<[^>]+>', ' ', .) %>%
+  str_squish()
+
+# Check a cleaned example
+cat("Example cleaned review:\n")
+cat(df$review[2], "\n")
+```
+
+```{r}
+
+nrow(df)
+df
+
+```
+
+
+## Step 0.4 — Lowercase
+
+```{r lowercase}
+df$review_clean <- tolower(df$review)
+```
+
+```{r}
+head(df)
+```
+
+
+## Step 0.5 — Filter Short Reviews (\< 20 words)
+
+Reviews with fewer than 20 words carry too little signal for NLP analysis.
+
+```{r filter-short}
+df$word_count_raw <- str_count(df$review_clean, "\\S+")
+
+n_before <- nrow(df)
+df <- df %>% filter(word_count_raw >= 20)
+
+cat("Rows removed (too short):", n_before - nrow(df), "\n")
+cat("Rows remaining:", nrow(df), "\n")
+```
+
+## Step 0.6 — Handle Missing Conditions
+
+```{r missing-conditions}
+cat("Missing conditions before:", sum(is.na(df$condition) | df$condition == ""), "\n")
+
+df$condition[is.na(df$condition) | df$condition == ""] <- "Unknown"
+
+cat("Missing conditions after:", sum(is.na(df$condition) | df$condition == ""), "\n")
+```
+
+## Step 0.7 — Parse Date Column
+
+```{r parse-date}
+df$date <- dmy(df$date)   # converts "20-May-12" → 2012-05-20
+
+cat("Date range:", format(min(df$date)), "to", format(max(df$date)), "\n")
+```
+
+## Step 0.8 — Validate Rating Range (1–10)
+
+```{r validate-rating}
+n_before <- nrow(df)
+df <- df %>% filter(rating >= 1 & rating <= 10)
+
+cat("Rows removed (invalid rating):", n_before - nrow(df), "\n")
+cat("Rating range:", min(df$rating), "to", max(df$rating), "\n")
+```
+
+## Phase 0 Summary
+
+```{r phase0-summary}
+cat("=== Phase 0 Complete ===\n")
+cat("Final cleaned dataset:", nrow(df), "rows x", ncol(df), "columns\n")
+```
+
+**Rating distribution after cleaning:**
+
+```{r rating-plot, fig.width=7, fig.height=4}
+ggplot(df, aes(x = factor(rating))) +
+  geom_bar(fill = "#2c7bb6", colour = "white") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Rating Distribution",
+    x     = "Star Rating (1–10)",
+    y     = "Number of Reviews"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+---
+
+# Phase 2 — Shared Feature Extraction
+
+> **Goal:** Add new feature columns to the cleaned dataset. These features are shared across both modelling branches in Phase 3.
+
+## Feature 1 — Review Length
+
+Word count of each cleaned review. Longer reviews tend to be more detailed and informative.
+
+```{r feature-length}
+df$review_length <- str_count(df$review_clean, "\\S+")
+
+summary(df$review_length)
+```
+
+```{r length-plot, fig.width=7, fig.height=4}
+ggplot(df, aes(x = review_length)) +
+  geom_histogram(bins = 60, fill = "#1a9641", colour = "white") +
+  scale_x_continuous(limits = c(0, 500)) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Distribution of Review Length",
+    x     = "Word Count",
+    y     = "Number of Reviews"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+## Feature 2 — Sentiment Score (AFINN)
+
+| `tidytext` | `get_sentiments("afinn")` | Loads the AFINN lexicon into R |
+| `tidytext` | `unnest_tokens()` | Tokenises reviews into individual words |
+
+The AFINN lexicon is a pre-built dictionary of **2,477 English words and phrases** that are commonly associated with sentiment and emotion. It was created by **Finn Årup Nielsen** in 2011 and is one of the most widely used tools for sentiment analysis in NLP.
+
+Each word in the dictionary has been **manually rated** by a human on a scale of −5 to +5 
+based on how positive or negative it is:
+
+Each word in a review is matched against the AFINN lexicon (scores from −5 to +5 for each word). We sum all word scores to get an overall sentiment score for the review.
+
+Each word is scored from −5 to +5 by AFINN. These word scores are summed across the entire review, so the final score can range well beyond ±5 depending on how long and how emotional the review is.
+
+```{r feature-sentiment}
+afinn <- get_sentiments("afinn")
+
+# Tokenise reviews into individual words
+tokens <- df %>%
+  select(uniqueID, review_clean) %>%
+  unnest_tokens(word, review_clean)
+
+# Match words to AFINN scores and sum per review
+sentiment_scores <- tokens %>%
+  inner_join(afinn, by = "word") %>%
+  group_by(uniqueID) %>%
+  summarise(sentiment_score = sum(value), .groups = "drop")
+
+# Merge back (reviews with no AFINN matches get score 0)
+df <- df %>%
+  left_join(sentiment_scores, by = "uniqueID") %>%
+  mutate(sentiment_score = replace_na(sentiment_score, 0))
+
+summary(df$sentiment_score)
+```
+
+```{r sentiment-plot, fig.width=7, fig.height=4}
+ggplot(df, aes(x = sentiment_score)) +
+  geom_histogram(bins = 60, fill = "#d7191c", colour = "white") +
+  labs(
+    title = "Distribution of Sentiment Scores",
+    x     = "Sentiment Score (AFINN)",
+    y     = "Number of Reviews"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+### Understanding Sentiment Scores
+
+The AFINN lexicon assigns a score to each **individual word** on a scale of −5 to +5.
+However, since we **sum all word scores** across an entire review, the final review-level 
+score can range well beyond ±5 depending on the length and emotional intensity of the review.
+
+**At the individual word level (−5 to +5):**
+
+| Score | Meaning | Example Words |
+|---|---|---|
+| +5 | Extremely positive | "outstanding", "superb" |
+| +3 | Moderately positive | "great", "excellent", "happy" |
+| +1 | Mildly positive | "good", "okay" |
+| 0 | Neutral / not in lexicon | "the", "drug", "tablet" |
+| −1 | Mildly negative | "bad", "tired" |
+| −3 | Moderately negative | "horrible", "painful", "sick" |
+| −5 | Extremely negative | "worst", "suicidal", "hate" |
+
+**At the entire review level (summed score):**
+
+| Score | Meaning | What It Likely Looks Like |
+|---|---|---|
+| Large positive (e.g. +40) | Overwhelmingly positive | Patient is very satisfied, uses words like "amazing", "helped", "grateful" |
+| Small positive (e.g. +5) | Slightly positive | Mixed experience but overall okay |
+| Zero (0) | Neutral or balanced | Equal positive and negative language, or very plain language |
+| Small negative (e.g. −5) | Slightly negative | Some complaints but not extreme |
+| Large negative (e.g. −50) | Overwhelmingly negative | Patient describes bad side effects, pain, and frustration |
+
+In the context of this dataset:
+
+- A **positive score** likely means the patient found the drug helpful and is satisfied
+- A **negative score** likely means the patient experienced bad side effects or no improvement
+- Scores near **zero** are either neutral in tone or contain equal amounts of positive and 
+negative language — which connects directly to our **rating-tone mismatch** feature
+
+
+## Feature 3 — Emotional Intensity
+
+The absolute value of the sentiment score — measures *how emotional* the language is, regardless of direction. A review that is extremely positive OR extremely negative scores high on emotional intensity.
+
+```{r feature-intensity}
+df$emotional_intensity <- abs(df$sentiment_score)
+
+summary(df$emotional_intensity)
+```
+
+## Feature 4 — Rating–Tone Mismatch
+
+Flags reviews where the **star rating contradicts the sentiment score**. This is a key insight from the EDA phase and feeds into both modelling branches.
+
+- High rating (≥ 7) but **negative** sentiment → mismatch
+- Low rating (≤ 3) but **positive** sentiment → mismatch
+
+```{r feature-mismatch}
+df$rating_tone_mismatch <- case_when(
+  df$rating >= 7 & df$sentiment_score < 0  ~ 1,
+  df$rating <= 3 & df$sentiment_score > 0  ~ 1,
+  TRUE                                      ~ 0
+)
+
+cat("Total mismatches:", sum(df$rating_tone_mismatch), "\n")
+cat("Mismatch rate:", round(mean(df$rating_tone_mismatch) * 100, 2), "%\n")
+```
+
+**Why mismatches are common in drug reviews**
+
+Side effects vs. effectiveness trade-off — A patient might write very negatively about side effects ("nausea, dizzy, awful") but still give a high star rating because the drug worked for their condition
+
+Emotional venting — Patients who are suffering tend to use very negative language in their writing even if they are broadly satisfied with the drug
+
+```{r mismatch-plot, fig.width=6, fig.height=4}
+df %>%
+  count(rating_tone_mismatch) %>%
+  mutate(label = ifelse(rating_tone_mismatch == 1, "Mismatch", "Consistent")) %>%
+  ggplot(aes(x = label, y = n, fill = label)) +
+  geom_col(width = 0.5) +
+  scale_fill_manual(values = c("Consistent" = "#1a9641", "Mismatch" = "#d7191c")) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Rating–Tone Mismatch",
+    x     = NULL,
+    y     = "Number of Reviews"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+**How it is used in Aspect 1 — Patient Perspective**
+The question is: "What makes a review useful to other patients?"
+
+A mismatched review is confusing and untrustworthy to readers. If someone writes glowing text but gives 2 stars, other patients do not know what to believe. This likely means:
+
+Mismatched reviews receive fewer useful votes — patients distrust inconsistent reviews 
+Consistent reviews are perceived as more credible and persuasive. So rating_tone_mismatch is expected to be a negative predictor of usefulness
+
+
+**How it is used in Aspect 2 — Clinical Perspective**
+The question is: "What can we extract from reviews to support medical understanding?"
+A mismatch can actually reveal something clinically interesting:
+
+A patient gives high stars but writes negatively → they may have accepted bad side effects because the drug still worked for their condition
+A patient gives low stars but writes positively → they may have liked the drug but stopped due to cost, access, or doctor's advice
+
+
+## Feature 5 — TF-IDF Specificity
+
+We used the tidytext package in R, specifically the bind_tf_idf() function.
+
+Measures how unique and specific the vocabulary in a review is. A high TF-IDF score means the review uses distinctive words (more informative). A low score means the review uses generic filler language.
+
+We compute TF-IDF per review and take the **mean score** as a single summary value.
+
+```{r feature-tfidf}
+tfidf_scores <- tokens %>%
+  count(uniqueID, word, name = "n") %>%
+  bind_tf_idf(word, uniqueID, n) %>%
+  group_by(uniqueID) %>%
+  summarise(tfidf_specificity = mean(tf_idf), .groups = "drop")
+
+df <- df %>%
+  left_join(tfidf_scores, by = "uniqueID") %>%
+  mutate(tfidf_specificity = replace_na(tfidf_specificity, 0))
+
+summary(df$tfidf_specificity)
+```
+
+### Interpreting the TF-IDF Specificity Output
+
+
+The TF-IDF values are small decimals, which is **correct and expected**. This is because TF-IDF is a product of two fractions:
+
+- **TF (Term Frequency)** = number of times a word appears in a review ÷ total words 
+  in that review → always between 0 and 1
+- **IDF (Inverse Document Frequency)** = log(total reviews ÷ number of reviews containing 
+  the word) → a small number when a word is common across many reviews
+
+Since TF-IDF = TF × IDF, the resulting values will always be **small decimals**, 
+never large numbers like sentiment scores.
+
+**What the values mean:**
+
+| Value | Meaning |
+|---|---|
+| Min = 0.004 | Very generic vocabulary — uses very common words like "good", "drug", "feel" |
+| Median = 0.034 | Typical review — mix of common and some specific words |
+| Max = 0.325 | Very specific vocabulary — uses rare, distinctive words, likely detailed medical descriptions |
+
+The output shows a healthy spread from 0.004 to 0.325, meaning the feature has **good variation** across reviews — which is exactly what is needed for a useful predictor in Phase 3 modelling.
+
+
+## Feature 6 — Condition Category
+
+There are hundreds of unique conditions in the dataset. We group them into broader clinical categories to reduce dimensionality for the models.
+
+```{r feature-condition-cat}
+
+# Remove more dirty data rows (truncated drug combinations)
+df <- df %>%
+  filter(!str_detect(condition, regex("^min\\)|^ge \\(|^min / |^acial", ignore_case = TRUE)))
+
+df$condition_category <- case_when(
+  str_detect(df$condition, regex("depress|anxiety|bipolar|schizo|adhd|mental|panic|ocd|ptsd|insomnia|sleep|obsessive|restless legs|narcolepsy|post traumatic|posttraumatic|premenstrual dysphoric|sedation|motion sickness|borderline personality|anorexia|binge eating|bulimia|psychosis|mania|hypersomnia|tourette|sexual dysfunction|paranoid|agitated|night terror|nightmare|pseudobulbar",
+                                  ignore_case = TRUE)) ~ "Mental Health",
+  str_detect(df$condition, regex("pain|migraine|arthritis|fibro|ibromyalgia|headache|back|cramp|muscle spasm|osteoporosis|inflammatory|ankylosing|gout|trigeminal|sciatica|neuralgia|postherpetic|chronic fatigue|benign essential trem|reflex sympathetic|cervical dystonia|atigue|tendonitis|temporomandibular|pruritus|spasticity|tinnitus|dysautonomia",
+                                  ignore_case = TRUE)) ~ "Pain & Inflammation",
+  str_detect(df$condition, regex("diabetes|thyroid|hormonal|insulin|weight|obesity|metabolic|hypogonad|hashimoto|hyperthyroid|hypothyroid|keratosis|alopecia|edema|hypertriglyceridemia|hyperprolactinemia|dietary supplement|herbal supplement|vitamin|iron deficiency|anemia|hypoestrogenism|precocious puberty",
+                                  ignore_case = TRUE)) ~ "Metabolic & Hormonal",
+  str_detect(df$condition, regex("birth control|contraceptive|pregnancy|acne|period|menopause|endometri|pcos|uterine|emergency contraception|abnormal uterine|menstrual|postmenopausal|premenstrual|polycystic ovary|ovarian|atrophic vaginitis|hot flash|breast cance|amenorrhea|premature lab|menorrhagia|emale infertility|perimenopausal|melasma|vulvodynia|oophorectomy",
+                                  ignore_case = TRUE)) ~ "Women's Health",
+  str_detect(df$condition, regex("blood pressure|heart|cholesterol|cardiac|hypertension|stroke|atrial fibrillation|arrhythmia|supraventricular|tachycardia|angina|deep vein thrombosis|pulmonary embolism|acute coronary|raynaud|atrial flutter|mitral valve|left ventricular",
+                                  ignore_case = TRUE)) ~ "Cardiovascular",
+  str_detect(df$condition, regex("infection|antibiotic|virus|bacterial|fungal|hiv|herpes|uti|hepatitis|sinusitis|influenza|cold sore|onychomycosis|pneumonia|otitis|strep|diarrhea|cold symptom|dental abscess|tonsillitis|head lice|trichomoniasis|malaria|lyme|giardiasis|swine flu|condylomata|pneumococcal|tinea|oral thrush",
+                                  ignore_case = TRUE)) ~ "Infectious Disease",
+  str_detect(df$condition, regex("asthma|copd|bronchitis|lung|respiratory|allerg|cough|nasal|congestion|rhinitis|sinus|pulmonary|hiccup",
+                                  ignore_case = TRUE)) ~ "Respiratory",
+  str_detect(df$condition, regex("cancer|tumor|chemo|oncology|lymphoma|leukemia|basal cell|carcinoma|organ transplant|colorectal cance|melanoma|sarcoma",
+                                  ignore_case = TRUE)) ~ "Cancer",
+  str_detect(df$condition, regex("crohn|colitis|bowel|ibs|gastr|stomach|acid reflux|gerd|constipation|nausea|vomiting|diverticulitis|hemorrhoid|erosive esophagitis|barrett|indigestion|duodenal ulce",
+                                  ignore_case = TRUE)) ~ "Gastrointestinal",
+  str_detect(df$condition, regex("epilep|seizure|neuro|parkinson|alzheimer|dementia|multiple sclerosis|vertigo|vertig|myasthenia|meniere",
+                                  ignore_case = TRUE)) ~ "Neurological",
+  str_detect(df$condition, regex("eczema|psoriasis|dermat|skin|rash|rosacea|hyperhidrosis|dry eye|urticaria|keratoconjunctivitis|sjogren|eye redness|burn|glaucoma|lupus|systemic lupus|uveitis|macular|ocular|wrinkle",
+                                  ignore_case = TRUE)) ~ "Skin & Eyes",
+  str_detect(df$condition, regex("smoking|nicotine|cessation|opiate|opioid|alcohol|substance|dependence|addiction",
+                                  ignore_case = TRUE)) ~ "Substance & Addiction",
+  str_detect(df$condition, regex("erectile|prostat|testosterone|benign prostatic|anesthesia|dysuria|connective tissue|immunodeficiency|primary immuno",
+                                  ignore_case = TRUE)) ~ "Men's Health",
+  str_detect(df$condition, regex("bladder|kidney|renal|urinary|overactive|interstitial cystitis",
+                                  ignore_case = TRUE)) ~ "Urological",
+  df$condition %in% c("Unknown", "Not Listed / Other",
+                       "Not Listed / Othe")             ~ "Unknown",
+  TRUE                                                  ~ "Other"
+)
+
+# Check remaining Other and its percentage
+cat("Remaining Other count:", sum(df$condition_category == "Other"), "\n")
+cat("Remaining Other percentage:", 
+    round(mean(df$condition_category == "Other") * 100, 2), "%\n")
+
+
+
+```
+
+```{r condition-plot, fig.width=8, fig.height=5}
+df %>%
+  count(condition_category) %>%
+  mutate(pct = n / sum(n) * 100) %>%
+  arrange(desc(pct)) %>%
+  ggplot(aes(x = reorder(condition_category, pct), y = pct, fill = condition_category)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = paste0(round(pct, 1), "%")), hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  labs(
+    title = "Reviews by Condition Category (%)",
+    x     = NULL,
+    y     = "Percentage of Reviews (%)"
+  ) +
+  theme_minimal(base_size = 13) +
+  scale_y_continuous(limits = c(0, max(df %>% count(condition_category) %>% 
+                                mutate(pct = n / sum(n) * 100) %>% pull(pct)) + 5))
+
+```
+
+
+
+## Feature 7 — Usefulness Binary Label (Target for Aspect 1)
+
+The `usefulCount` column records how many other patients found a review helpful. We binarise it: the **top 25%** of usefulCount = useful (1), the rest = not useful (0).
+
+This is the **target variable** for Aspect 1 (predicting review usefulness).
+
+```{r feature-useful}
+useful_threshold <- quantile(df$usefulCount, 0.75)
+
+df$useful_binary <- ifelse(df$usefulCount >= useful_threshold, 1, 0)
+
+cat("Useful threshold (75th percentile):", useful_threshold, "\n")
+cat("Useful reviews (1):", sum(df$useful_binary == 1), "\n")
+cat("Not useful reviews (0):", sum(df$useful_binary == 0), "\n")
+```
+
+
+
+```{r}
+ggplot(df, aes(x = usefulCount)) +
+  geom_histogram(bins = 50, fill = '#2c7bb6', colour = 'white') +
+  scale_x_continuous(limits = c(0, 200)) +
+  scale_y_continuous(labels = comma) +
+  geom_vline(xintercept = quantile(df$usefulCount, 0.75), 
+             colour = 'red', linetype = 'dashed', linewidth = 1) +
+  annotate('text', x = quantile(df$usefulCount, 0.75) + 10, 
+           y = 50000, label = '75th percentile', colour = 'red') +
+  labs(
+    title = 'Distribution of Usefulness Votes',
+    x     = 'Useful Vote Count',
+    y     = 'Number of Reviews'
+  ) +
+  theme_minimal(base_size = 13)
+```
+```{r}
+# Check balance at different thresholds
+thresholds <- c(0.50, 0.75, 0.90)
+for (t in thresholds) {
+  threshold_val <- quantile(df$usefulCount, t)
+  pct_useful    <- mean(df$usefulCount >= threshold_val) * 100
+  cat("Threshold:", t*100, "% |",
+      "Min usefulCount:", threshold_val, "|",
+      "Useful reviews:", round(pct_useful, 1), "%\n")
+}
+```
+
+The 50th percentile produces an almost equal split but sets the bar too low — 
+a review with just 16 votes is not meaningfully more useful than one with 15. The 90th percentile is too restrictive, leaving only 10% of reviews as useful, which risks class imbalance in the model. 
+
+The **75th percentile strikes the best balance** — selective enough to identify genuinely useful reviews, while retaining 
+enough positive examples for the model to learn from.
+---
+
+# Phase 2 Summary
+
+```{r phase2-summary}
+cat("=== Phase 2 Complete ===\n")
+cat("Final dataset dimensions:", nrow(df), "rows x", ncol(df), "columns\n\n")
+
+new_features <- data.frame(
+  Feature = c("review_length", "sentiment_score", "emotional_intensity",
+              "rating_tone_mismatch", "tfidf_specificity",
+              "condition_category", "useful_binary"),
+  Description = c(
+    "Word count of the cleaned review",
+    "Sum of AFINN scores — overall positive/negative tone",
+    "Absolute sentiment score — how emotionally strong the review is",
+    "1 if star rating contradicts sentiment direction",
+    "Mean TF-IDF score — how specific and unique the vocabulary is",
+    "Grouped medical condition label (10 categories)",
+    "1 if in top 25% of usefulCount (target for Aspect 1)"
+  ),
+  Used_In = c(
+    "Aspect 1 + Aspect 2",
+    "Aspect 1 + Aspect 2",
+    "Aspect 1 + Aspect 2",
+    "Aspect 1 + Aspect 2",
+    "Aspect 1 + Aspect 2",
+    "Aspect 2",
+    "Aspect 1 (target)"
+  )
+)
+
+knitr::kable(new_features, col.names = c("Feature", "Description", "Used In"))
+```
+
+**Preview of the enriched dataset:**
+
+```{r preview-enriched}
+df %>%
+  select(uniqueID, drugName, condition_category, rating,
+         review_length, sentiment_score, emotional_intensity,
+         rating_tone_mismatch, tfidf_specificity, useful_binary) %>%
+  head(10)
+```
+
+---
+
+# Save Output
+
+The enriched dataset is saved and ready for **Phase 3 — Modelling**.
+
+> In Phase 3, this dataset will be split 80/20 into train and test sets before any model is trained.
+
+```{r save}
+write.csv(df, "drug_reviews_phase2.csv", row.names = FALSE)
+cat("Saved: drug_reviews_phase2.csv\n")
+cat("Rows:", nrow(df), "| Columns:", ncol(df), "\n")
+```
+
+---
+
+*End of Phase 0 & Phase 2*

@@ -1,0 +1,182 @@
+---
+title: "BERT_PCA"
+output: html_document
+date: "2026-04-13"
+---
+
+```{r}
+
+library(tidyverse)
+library(caret)
+library(reticulate)
+
+set.seed(42)
+
+
+
+```
+
+Step 1 : Load CSV Files
+
+```{r}
+# ── Step 1: Load Pete's CSV ──────────────────────────────────────────
+df <- read_csv("drug_reviews_phase2.csv") %>%
+  mutate(row_id = row_number())  # lock row order before anything else
+
+head(df)
+
+```
+
+```{r}
+# Check dimensions
+cat("Rows:", nrow(df), "\n")
+cat("Columns:", ncol(df), "\n")
+
+# Check row_id is correctly assigned
+cat("First row_id:", df$row_id[1], "\n")
+cat("Last row_id:", df$row_id[nrow(df)], "\n")
+# Should be 1 and 215063
+
+# Check no missing row_ids
+cat("Missing row_ids:", sum(is.na(df$row_id)), "\n")
+# Should be 0
+```
+
+
+Step 2 : Generate shared train/test split
+
+```{r}
+# ── Step 2: Generate shared train/test split ─────────────────────────
+# Stratified on condition_category so all 14 groups appear in both sets
+train_idx <- createDataPartition(
+  df$condition_category, 
+  p    = 0.8, 
+  list = FALSE
+)
+
+# Save as a single column CSV — everyone loads this, nobody regenerates
+write_csv(
+  data.frame(row_id = df$row_id[train_idx]), 
+  "shared_train_idx.csv"
+)
+# OUTPUT 1 ✓ → shared_train_idx.csv
+
+
+
+```
+
+```{r}
+# Check split sizes
+cat("Train size:", length(train_idx), "\n")
+cat("Test size:", nrow(df) - length(train_idx), "\n")
+cat("Train ratio:", round(length(train_idx) / nrow(df), 2), "\n")
+# Should be ~0.80
+
+# Check all 16 condition categories appear in both sets
+train_conditions <- df$condition_category[train_idx]
+test_conditions  <- df$condition_category[-train_idx]
+
+cat("Categories in train:", n_distinct(train_conditions), "\n")
+cat("Categories in test:", n_distinct(test_conditions), "\n")
+# Both should be 16
+
+# Check shared_train_idx.csv was saved correctly
+idx_check <- read_csv("shared_train_idx.csv")
+cat("Saved train idx rows:", nrow(idx_check), "\n")
+# Should match length(train_idx)
+```
+
+
+Step 3 : Load BERT embeddings and reduce with PCA
+
+```{r}
+np <- import("numpy")
+embeddings_raw <- np$load("bert_embeddings.npy")  # 215063 × 768
+
+# Fit PCA on training rows only — never fit on full data
+emb_train <- embeddings_raw[train_idx, ]
+pca_model  <- prcomp(emb_train, rank. = 50, scale. = FALSE)
+
+# Save PCA model object — everyone loads this, nobody refits
+saveRDS(pca_model, "pca_model.rds")
+# OUTPUT 2 ✓ → pca_model.rds
+
+
+```
+
+
+```{r}
+# Check embeddings loaded correctly
+cat("Embeddings shape:", dim(embeddings_raw), "\n")
+# Should be (215063, 768)
+
+# Check PCA was fitted on train only
+cat("PCA fitted on rows:", nrow(emb_train), "\n")
+# Should match length(train_idx)
+
+cat("PCA components:", ncol(pca_model$rotation), "\n")
+# Should be 50
+
+# Check how much variance is explained by 50 components
+variance_explained <- cumsum(pca_model$sdev^2) / sum(pca_model$sdev^2)
+cat("Variance explained by 50 PCs:", round(variance_explained[50] * 100, 2), "%\n")
+# Ideally above 80% — if too low, consider increasing rank to 100
+
+# Check PCA model saved
+cat("PCA model file exists:", file.exists("pca_model.rds"), "\n")
+
+```
+
+
+Step 4 : Apply PCA to ALL rows (train + test)
+
+```{r}
+emb_all_reduced <- predict(pca_model, embeddings_raw)  # 215063 × 50
+
+# Combine with row_id so Evonne and you can join safely
+emb_pca_df <- as.data.frame(emb_all_reduced) %>%
+  setNames(paste0("pc_", 1:50)) %>%
+  mutate(row_id = df$row_id)
+
+write_csv(emb_pca_df, "bert_pca_50.csv")
+# OUTPUT 3 ✓ → bert_pca_50.csv
+
+```
+
+
+```{r}
+# Check reduced dimensions
+cat("Reduced embeddings shape:", dim(emb_all_reduced), "\n")
+# Should be (215063, 50)
+
+# Check column names
+cat("First 5 column names:", paste(names(emb_pca_df)[1:5], collapse = ", "), "\n")
+# Should be pc_1, pc_2, pc_3, pc_4, pc_5
+
+# Check row_id matches original df
+cat("row_id matches:", all(emb_pca_df$row_id == df$row_id), "\n")
+# Should be TRUE
+
+# Check no missing values
+cat("Missing values in PCA df:", sum(is.na(emb_pca_df)), "\n")
+# Should be 0
+
+# Check bert_pca_50.csv saved correctly
+pca_check <- read_csv("bert_pca_50.csv")
+cat("Saved PCA rows:", nrow(pca_check), "\n")
+cat("Saved PCA cols:", ncol(pca_check), "\n")
+# Should be 215063 rows and 51 columns (50 PCs + row_id)
+```
+
+
+Final Check
+
+```{r}
+
+cat("shared_train_idx.csv exists:", file.exists("shared_train_idx.csv"), "\n")
+cat("pca_model.rds exists:", file.exists("pca_model.rds"), "\n")
+cat("bert_pca_50.csv exists:", file.exists("bert_pca_50.csv"), "\n")
+# All should be TRUE
+
+```
+
