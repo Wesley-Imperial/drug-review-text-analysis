@@ -1,0 +1,9 @@
+=== Side Effects Analysis Summary ===
+
+Total reviews analysed: 193895 
+Reviews with side effects: 138907 
+Overall percentage: 71.6 %
+
+By condition category:
+
+By rating:
