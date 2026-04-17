@@ -174,8 +174,8 @@ scikit-learn
 2. Open `data/README.md` for the Google Drive link and download all data files
 3. Place all downloaded files into the `/data` folder at the root of the repository
 4. Run scripts in order:
-   - `feature-extraction/scripts/phase0_phase2.Rmd` ← data cleaning & feature extraction
-   - `feature-extraction/scripts/phase2_5_bert.ipynb` ← BERT embedding generation
+   - `feature-extraction/scripts/Feature_extraction.Rmd` ← data cleaning & feature extraction
+   - `feature-extraction/scripts/BERT_embeddings.ipynb` ← BERT embedding generation
    - Then run aspect scripts:
      - Create a `/data` folder inside `aspect1-patient/` and `aspect2-clinical/`
      - Run `aspect1-patient/scripts/aspect1_benchmark.qmd` and `aspect1_bert.qmd`
