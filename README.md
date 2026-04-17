@@ -31,7 +31,8 @@ This project investigates patient drug reviews from Drugs.com (2008–2017) from
 ---
 
 ## Repository Structure
-'''
+
+```
 drug-review-text-analysis/
 ├── data/
 │   └── README.md              ← data access instructions
@@ -54,7 +55,8 @@ drug-review-text-analysis/
 │   ├── aspect2_bert.qmd
 │   └── aspect2_side_effects.qmd
 └── plots/
-'''
+```
+
 ---
 
 ## Data
