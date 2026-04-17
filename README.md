@@ -143,13 +143,25 @@ scikit-learn
 ## How to Run
 
 1. Clone this repository
-2. Download data files from shared Google Drive and place in `/data` folder
-3. Open scripts in order:
-   - Start with `feature-extraction/scripts/phase0_phase2.Rmd`
-   - Then `feature-extraction/scripts/phase2_5_bert.ipynb`
-   - Then aspect scripts in either order
+2. Open `data/README.md` for the Google Drive link and download all data files
+3. Place all downloaded files into the `/data` folder at the root of the repository
+4. Run scripts in order:
+   - `feature-extraction/scripts/phase0_phase2.Rmd` ← data cleaning & feature extraction
+   - `feature-extraction/scripts/phase2_5_bert.ipynb` ← BERT embedding generation
+   - Then run aspect scripts:
+     - Create a `/data` folder inside `aspect1-patient/` and `aspect2-clinical/`
+     - Run `aspect1-patient/scripts/aspect1_benchmark.qmd` and `aspect1_bert.qmd`
+     - Run `aspect2-clinical/scripts/aspect2_benchmark.qmd`, `aspect2_bert.qmd`, and `aspect2_side_effects.qmd`
 
-> **Important:** All scripts use `set.seed(42)` and load the shared train/test split from `shared_train_idx.csv`. Never regenerate the split independently.
+> **Important:** All scripts use `set.seed(42)` and load the shared train/test split 
+> from `shared_train_idx.csv`. Never regenerate the split independently.
+
+> **Tip:** Pre-trained models are saved as `.rds` files. To skip re-running the models 
+> (which can take a long time), load them directly:
+> ```r
+> model_bm <- readRDS("data/model_benchmark.rds")
+> model_bert <- readRDS("data/model_bert_100.rds")
+> ```
 
 ---
 
