@@ -1,5 +1,6 @@
 # Drug Review Text Analysis
 ### Imperial College London | MSBA | Text Analysis for Business 2026
+https://drive.google.com/drive/folders/1JdwkNarffY648h-UwDiEAby9fyDM2TG0?usp=drive_link
 
 Analysing 193,895 patient drug reviews to uncover two hidden signals — what makes a review useful to patients, and what clinical information it contains. Built with R, BERT embeddings, and machine learning.
 
