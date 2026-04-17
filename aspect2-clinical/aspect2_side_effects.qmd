@@ -1,0 +1,256 @@
+---
+title: "Aspect 2 Side Effects Analysis"
+author: "Wesley"
+date: today
+format: html
+---
+
+## Overview
+
+This script addresses Sub-RQ2 of the project — detecting side effects from patient drug review text. Unlike the benchmark and BERT models which focus on condition prediction, this analysis takes a keyword-based approach to identify and quantify how frequently patients mention side effects in their reviews, and how this varies across condition categories and rating levels.
+The approach is intentionally lightweight — rather than building a full classifier, we define a curated list of 30-50 common side effect terms, flag reviews and sentences containing them, and analyse the resulting frequency patterns. This is sufficient to answer Sub-RQ2 and provides clinically meaningful insights without requiring additional model training.
+
+### Research Questions
+
+Sub-RQ2: Can side effects be detected from patient review text using linguistic patterns?
+This script answers Sub-RQ2 by showing how frequently side effect language appears across different condition categories and rating levels. The key questions are:
+
+Which condition categories mention side effects most frequently?
+Do lower rated reviews mention more side effects than higher rated ones?
+Is there a relationship between side effect mentions and patient satisfaction?
+
+The findings feed directly into Ellen's Phase 5 interpretation — specifically the clinical implications section around auto-detecting side effects from review text.
+
+
+## 1. Setup & libraries
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(tidytext)
+library(ggplot2)
+
+set.seed(42)
+```
+
+
+## 2. Load data
+
+```{r}
+# Load main dataset
+df <- read_csv("data/drug_reviews_phase2.csv") %>%
+  mutate(row_id = row_number())
+
+# Filter Other and Unknown — consistent with Tasks A and B
+df <- df %>%
+  filter(!condition_category %in% c("Other", "Unknown"))
+
+# Verify
+cat("Total rows:", nrow(df), "\n")
+cat("Condition categories:", n_distinct(df$condition_category), "\n")
+```
+
+
+## 3. Define side effect keywords
+
+```{r}
+# Curated list of common side effect terms
+side_effects <- c(
+  # Gastrointestinal
+  "nausea", "vomiting", "diarrhea", "constipation", "stomach",
+  "bloating", "indigestion", "heartburn", "cramps", "appetite",
+  
+  # Neurological
+  "headache", "dizziness", "drowsiness", "fatigue", "insomnia",
+  "tremor", "confusion", "memory", "concentration", "migraine",
+  
+  # Psychological
+  "anxiety", "depression", "mood", "irritability", "suicidal",
+  "hallucination", "paranoia", "agitation", "panic",
+  
+  # Physical
+  "rash", "itching", "swelling", "weight", "sweating",
+  "bleeding", "bruising", "pain", "weakness", "fever",
+  
+  # Cardiovascular
+  "palpitation", "heartbeat", "blood pressure", "chest",
+  
+  # Sexual
+  "libido", "sexual", "erectile"
+)
+
+cat("Total side effect terms:", length(side_effects), "\n")
+```
+
+
+## 4. Flag side effect sentences
+
+```{r}
+# Create a regex pattern from side effect terms
+pattern <- paste(side_effects, collapse = "|")
+
+# Flag reviews containing any side effect term
+df <- df %>%
+  mutate(
+    has_side_effect = str_detect(tolower(review_clean), pattern),
+    side_effect_count = str_count(tolower(review_clean), pattern)
+  )
+
+# Quick summary
+cat("Reviews mentioning side effects:", sum(df$has_side_effect), "\n")
+cat("Percentage:", round(mean(df$has_side_effect) * 100, 1), "%\n")
+cat("Average mentions per review:", round(mean(df$side_effect_count), 2), "\n")
+```
+### Findings: Side Effect Detection
+The keyword matching approach flagged 138,907 reviews (71.6% of all reviews) as containing at least one side effect term, with an average of 1.9 mentions per review. This directly answers Sub-RQ2 — side effect language is pervasive in patient drug reviews and can be reliably detected using keyword matching.
+However, a key limitation of this approach is the potential for false positives. Simple pattern matching may match partial words — for example "pain" matching "Spain", or "mood" matching "childhood". A proper NLP classifier would reduce these errors but is beyond the scope of this analysis. The 71.6% figure should therefore be interpreted as an upper bound estimate rather than a precise measurement.
+
+
+## 5. Frequency by condition
+
+```{r}
+# Side effect frequency by condition category
+condition_side_effects <- df %>%
+  group_by(condition_category) %>%
+  summarise(
+    total_reviews = n(),
+    reviews_with_se = sum(has_side_effect),
+    pct_with_se = round(mean(has_side_effect) * 100, 1),
+    avg_se_count = round(mean(side_effect_count), 2)
+  ) %>%
+  arrange(desc(pct_with_se))
+
+print(condition_side_effects)
+
+# Visualise
+plot_condition <- ggplot(condition_side_effects, 
+       aes(x = reorder(condition_category, pct_with_se), 
+           y = pct_with_se,
+           fill = pct_with_se)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_gradient(low = "#99CC99", high = "#CC6666") +
+  theme_minimal() +
+  labs(title = "Side Effect Mention Rate by Condition Category",
+       x = "Condition Category",
+       y = "% Reviews Mentioning Side Effects",
+       fill = "Rate %")
+
+print(plot_condition)
+```
+
+
+## 6. Frequency by rating
+
+```{r}
+# Side effect frequency by rating level
+rating_side_effects <- df %>%
+  group_by(rating) %>%
+  summarise(
+    total_reviews = n(),
+    reviews_with_se = sum(has_side_effect),
+    pct_with_se = round(mean(has_side_effect) * 100, 1),
+    avg_se_count = round(mean(side_effect_count), 2)
+  ) %>%
+  arrange(rating)
+
+print(rating_side_effects)
+
+# Visualise
+plot_rating <- ggplot(rating_side_effects,
+       aes(x = rating, y = pct_with_se, fill = pct_with_se)) +
+  geom_col() +
+  scale_x_continuous(breaks = 1:10) +
+  scale_fill_gradient(low = "#99CC99", high = "#CC6666") +
+  theme_minimal() +
+  labs(title = "Side Effect Mention Rate by Rating Level",
+       x = "Patient Rating (1-10)",
+       y = "% Reviews Mentioning Side Effects",
+       fill = "Rate %")
+
+print(plot_rating)
+```
+
+
+## 7. Save outputs
+
+```{r}
+dir.create("plots", showWarnings = FALSE)
+
+# Save condition plot
+ggsave("plots/aspect2_se_by_condition.png", plot = plot_condition, width = 10, height = 8)
+
+# Save rating plot
+ggsave("plots/aspect2_se_by_rating.png", plot = plot_rating, width = 10, height = 6)
+
+# Save summary stats
+sink("plots/aspect2_se_metrics.txt")
+cat("=== Side Effects Analysis Summary ===\n\n")
+cat("Total reviews analysed:", nrow(df), "\n")
+cat("Reviews with side effects:", sum(df$has_side_effect), "\n")
+cat("Overall percentage:", round(mean(df$has_side_effect) * 100, 1), "%\n\n")
+cat("By condition category:\n")
+print(condition_side_effects)
+cat("\nBy rating:\n")
+print(rating_side_effects)
+sink()
+
+cat("All outputs saved to /plots folder\n")
+```
+
+
+## Summary & Handoff Notes (for Ellen)
+
+### What this file does
+This script addresses Sub-RQ2 of the project — detecting side effects from patient drug review text. Using a curated list of 46 common side effect terms, it flags reviews containing side effect language and analyses frequency patterns across condition categories and rating levels. This is a keyword-based approach rather than a full classifier, which is sufficient to answer Sub-RQ2 and provide clinically meaningful insights.
+
+### Data
+
+Input: drug_reviews_phase2.csv — 193,895 rows after dropping Other and Unknown categories
+No train/test split — full dataset used for frequency analysis
+No embeddings needed — keyword matching only
+
+### Method
+
+A list of 46 side effect terms was curated across six clinical categories — gastrointestinal, neurological, psychological, physical, cardiovascular, and sexual. Reviews were flagged using str_detect on the cleaned review text, with str_count used to count total mentions per review. All matching was case insensitive.
+
+### Key Findings
+
+#### Overall:
+
+138,907 reviews (71.6%) mention at least one side effect term
+Average of 1.9 side effect mentions per review
+Side effect language is pervasive across all condition categories
+
+#### By condition category:
+
+Pain & Inflammation has the highest side effect mention rate at 85.9%, likely reflecting the nature of chronic pain treatments and their systemic effects
+Respiratory has the lowest rate at 38.0%, suggesting patients focus more on symptom relief than side effects
+Most conditions cluster between 60-80%, indicating side effect language is consistently common regardless of condition
+
+#### By rating level:
+
+Higher rated reviews (9-10) mention fewer side effects — 71.6% and 64.5% respectively
+Peak side effect mentions occur at rating 4 (80.1%), not rating 1 as might be expected
+This suggests patients who are satisfied with their treatment mention side effects less, while moderately dissatisfied patients are most likely to document side effects in detail
+
+### Output Files
+
+All files saved in the /plots folder:
+
+aspect2_se_metrics.txt — full frequency tables by condition and rating
+aspect2_se_by_condition.png — side effect rate bar chart by condition category
+aspect2_se_by_rating.png — side effect rate bar chart by rating level
+
+### Connection to Other Aspects
+
+The finding that higher ratings correlate with fewer side effect mentions directly connects to Evonne's Aspect 1 work on review usefulness and sentiment. Ellen should examine whether reviews flagged as high side effect mentions are also rated as more useful — this would suggest that clinical detail increases perceived usefulness, bridging the patient and clinical perspectives.
+
+### Limitations
+
+Keyword matching may produce false positives — common words like "pain", "mood", and "chest" may match non-side-effect contexts
+The 71.6% figure should be treated as an upper bound estimate
+No sentence-level analysis was performed — the entire review was treated as a single unit
+Keyword list was manually curated and may miss domain-specific terminology used by patients
+

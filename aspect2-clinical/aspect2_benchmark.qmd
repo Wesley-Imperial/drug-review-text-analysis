@@ -1,0 +1,312 @@
+---
+title: "Aspect 2 Benchmark Model"
+author: "Wesley"
+date: today
+format: html
+---
+
+## Overview
+This script builds the benchmark model for Aspect 2 of the group project. The goal is to predict the medical condition category of a drug review using linguistic features extracted in Phase 2, without any deep learning embeddings. This serves as the baseline model that the BERT-based model (aspect2_bert.qmd) will be compared against in terms of macro F1 score.
+The model uses multinomial logistic regression with 5-fold cross-validation, trained on 80% of the data and evaluated on a held-out 20% test set. The train/test split is shared across all team members to ensure consistent and comparable results.
+
+### Research Questions
+This script addresses two of the project's sub-research questions:
+Sub-RQ2: Can side effects be detected from patient review text using linguistic patterns?
+Sub-RQ4: Can the patient's medical condition be predicted from review text using linguistic features alone?
+The benchmark model directly tackles Sub-RQ4. The results feed into Ellen's Phase 5 cross-aspect comparison, where feature importance across Aspect 1 and Aspect 2 will be analysed to identify what linguistic signals are shared between predicting usefulness and predicting clinical condition.
+
+
+## Model Design: Aspect 2 vs Aspect 1
+
+This project investigates patient drug reviews from two complementary perspectives, each targeting a different research question but using the same set of linguistic features extracted in Phase 2.
+Aspect 1 (Evonne) asks: what makes a review useful? The target variable is useful_binary — whether a review received enough helpfulness votes to be in the top 25%. This is a patient-facing perspective, focused on the social value of a review.
+Aspect 2 (Wesley) asks: can we predict the medical condition from review text alone? The target variable is condition_category — a 14-class clinical grouping of the condition being treated. This is a clinical perspective, focused on the informational content of a review.
+Both aspects use the same six features as model input:
+
+sentiment_score
+emotional_intensity
+review_length
+rating_tone_mismatch
+tfidf_specificity
+rating
+
+The key exclusions are intentional — Evonne excludes condition_category to avoid using the clinical label as a predictor of usefulness, and Wesley excludes useful_binary to avoid using social signal as a predictor of clinical content. This clean separation ensures that when Ellen compares both aspects in Phase 5, any shared feature importance reflects genuine linguistic overlap rather than an artefact of feature leakage.
+
+
+## Code chunk Order:
+
+1. Setup & libraries
+2. Load data
+3. Add row_id + join (bert not needed here, but good practice)
+4. Train/test split
+5. Define Features & trainControl
+6. Train the Model
+7. Evaluation
+8. Feature Importance
+9. Save Outputs
+
+
+## 1. Setup & libraries
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(caret)
+library(nnet)      # backend for multinom
+library(ggplot2)
+library(MLmetrics)
+
+set.seed(42)
+```
+
+## 2. Load data
+
+```{r}
+df <- read_csv("data/drug_reviews_phase2.csv") %>%
+  mutate(row_id = row_number())
+
+# Load shared train indices
+train_rows <- read_csv("data/shared_train_idx.csv")$row_id
+
+# Quick check
+cat("Total rows:", nrow(df), "\n")
+cat("Train rows:", length(train_rows), "\n")
+cat("Test rows:", nrow(df) - length(train_rows), "\n")
+```
+
+## 3. Add row_id + join (bert not needed heree)
+
+```{r}
+# Check structure
+glimpse(df)
+
+# Check condition_category distribution
+df %>%
+  count(condition_category, sort = TRUE) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  print(n = 14)
+
+# Check for missing values in key columns
+df %>%
+  select(condition_category, sentiment_score, emotional_intensity,
+         review_length, rating_tone_mismatch, tfidf_specificity, rating) %>%
+  summarise(across(everything(), ~sum(is.na(.)))) %>%
+  glimpse()
+```
+
+```{r}
+# Drop Other and Unknown from condition_category
+df <- df %>%
+  filter(!condition_category %in% c("Other", "Unknown"))
+
+# Verify
+cat("Rows after filtering:", nrow(df), "\n")
+cat("Classes remaining:", n_distinct(df$condition_category), "\n")
+```
+
+## 4. Train/test Split
+
+```{r}
+# Convert condition_category to factor
+df <- df %>%
+  mutate(condition_category = as.factor(condition_category))
+
+# Split using Pete's shared train indices
+df_train <- df %>% filter(row_id %in% train_rows)
+df_test  <- df %>% filter(!row_id %in% train_rows)
+
+# Verify
+cat("Train rows:", nrow(df_train), "\n")
+cat("Test rows:", nrow(df_test), "\n")
+cat("Classes in train:", n_distinct(df_train$condition_category), "\n")
+cat("Classes in test:", n_distinct(df_test$condition_category), "\n")
+```
+```{r}
+# Clean factor levels to valid R variable names
+levels(df_train$condition_category) <- make.names(levels(df_train$condition_category))
+levels(df_test$condition_category) <- make.names(levels(df_test$condition_category))
+
+# Update y_train and y_test
+y_train <- df_train$condition_category
+y_test  <- df_test$condition_category
+
+# Verify new level names
+cat("Cleaned class levels:\n")
+levels(y_train)
+```
+
+
+## 5. Define Features & trainControl
+
+```{r}
+# Define feature columns for benchmark model
+features <- c("sentiment_score", "emotional_intensity", 
+              "review_length", "rating_tone_mismatch", 
+              "tfidf_specificity", "rating")
+
+# Prepare train and test sets
+X_train <- df_train %>% select(all_of(features))
+y_train <- df_train$condition_category
+
+X_test  <- df_test %>% select(all_of(features))
+y_test  <- df_test$condition_category
+
+# Define cross-validation
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = multiClassSummary,
+  savePredictions = "final",
+  allowParallel = FALSE
+)
+```
+
+
+## 6. Train the Model
+
+```{r}
+#| eval: false
+
+# Train multinomial logistic regression
+model_benchmark <- train(
+  x = X_train,
+  y = y_train,
+  method = "multinom",
+  trControl = ctrl,
+  metric = "Accuracy",
+  trace = FALSE,
+  maxit = 200
+)
+
+# Quick summary
+print(model_benchmark)
+```
+
+```{r}
+# Save immediately after training finishes
+saveRDS(model_benchmark, "data/model_benchmark.rds")
+```
+
+
+## 7. Evaluation
+
+```{r}
+# Load model if needed
+# model_benchmark <- readRDS("data/model_benchmark.rds")
+
+# Predict on test set
+y_pred <- predict(model_benchmark, newdata = X_test)
+
+# Confusion matrix
+cm <- confusionMatrix(y_pred, y_test)
+print(cm)
+
+# Compute macro F1 manually
+f1_per_class <- cm$byClass[, "F1"]
+macro_f1 <- mean(f1_per_class, na.rm = TRUE)
+
+cat("\n--- Benchmark Model Results ---\n")
+cat("Macro F1 (test):", round(macro_f1, 4), "\n")
+cat("Accuracy (test):", round(cm$overall["Accuracy"], 4), "\n")
+```
+
+## 8. Feature Importance
+
+```{r}
+# Extract feature importance
+importance <- varImp(model_benchmark, scale = TRUE)
+print(importance)
+
+# Plot feature importance
+plot(importance, 
+     main = "Feature Importance — Benchmark Model",
+     top = 6)
+```
+
+
+## 9. Save Outputs
+
+```{r}
+# Create plots folder if it doesn't exist
+dir.create("plots", showWarnings = FALSE)
+
+# Save feature importance plot
+png("plots/aspect2_benchmark_importance.png", width = 800, height = 600)
+plot(importance,
+     main = "Feature Importance — Benchmark Model",
+     top = 6)
+dev.off()
+
+# Save confusion matrix plot
+png("plots/aspect2_benchmark_confusion.png", width = 1000, height = 800)
+ggplot(as.data.frame(cm$table), 
+       aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), size = 3) +
+  scale_fill_gradient(low = "white", high = "#4B9CD3") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Confusion Matrix — Benchmark Model",
+       x = "Actual",
+       y = "Predicted")
+dev.off()
+
+# Save key metrics to a summary file
+sink("plots/aspect2_benchmark_metrics.txt")
+cat("=== Benchmark Model Summary ===\n\n")
+cat("Macro F1 (test):", round(macro_f1, 4), "\n")
+cat("Accuracy (test):", round(cm$overall["Accuracy"], 4), "\n")
+cat("Kappa (test):", round(cm$overall["Kappa"], 4), "\n\n")
+cat("Feature Importance:\n")
+print(importance$importance)
+sink()
+
+cat("All outputs saved to /plots folder\n")
+```
+
+## Summary & Handoff Notes (for Ellen)
+
+### What this file does
+This script builds the benchmark model for Aspect 2 of the project. The goal is to predict which medical condition category a drug review belongs to, using only the linguistic and numerical features extracted in Phase 2 — without any deep learning embeddings. This serves as the baseline that the BERT model (aspect2_bert.qmd) will be compared against.
+
+### Data
+
+Input: drug_reviews_phase2.csv — 193,895 rows after dropping Other and Unknown categories
+Split: 80/20 train/test using shared_train_idx.csv, shared across all team members for consistency
+Target variable: condition_category — 14 clinical condition groups
+Features used: tfidf_specificity, rating, rating_tone_mismatch, sentiment_score, emotional_intensity, review_length
+
+### Model
+
+Classifier: Multinomial logistic regression via caret (method = "multinom")
+Validation: 5-fold cross-validation
+Optimisation metric: Accuracy during training, Macro F1 computed manually post-training due to caret compatibility issues with 14-class problems
+
+### Results
+
+Macro F1 (test): 0.244
+Accuracy (test): 32.65%
+Kappa: 0.091
+
+### Key Findings
+
+tfidf_specificity completely dominates feature importance — scoring 100 while all other features scored below 1.5. Vocabulary specificity is the primary linguistic signal distinguishing condition categories.
+Despite this, the model collapses toward majority classes (Women.s.Health and Mental.Health), completely missing minority classes like Cancer, Cardiovascular, and Neurological.
+This is expected — simple aggregate features cannot capture the semantic meaning needed to distinguish between 14 medical conditions, which motivates the BERT model.
+
+### Output Files
+All files are saved in the /plots folder:
+
+aspect2_benchmark_metrics.txt — Macro F1, Accuracy, Kappa, and full feature importance scores
+aspect2_benchmark_confusion.png — 14x14 confusion matrix heatmap
+aspect2_benchmark_importance.png — Feature importance bar chart
+
+The key number for cross-aspect comparison is Macro F1 = 0.244. Feature importance rankings should be compared against Evonne's Aspect 1 benchmark to identify which linguistic features are shared predictors across both aspects.
+
+### Limitations
+
+Severe class imbalance — Women.s.Health at 27.7% vs Cancer at only 0.4% — means minority class performance is unreliable
+Multinomial logistic regression assumes linear decision boundaries, which may not hold for complex linguistic patterns
+Aggregate features lose word-level context — this motivates the BERT model in aspect2_bert.qmd
